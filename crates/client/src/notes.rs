@@ -1,25 +1,19 @@
-//! App-level note glue: SQL, op building, row mapping, and the per-table
-//! event applier. The engine layer stays generic — it never names `Note`
-//! (SYNC_API.md, "Killing the hardcoded Note").
+//! App-level note glue: row mapping, op building, and the per-table event
+//! applier. All SQL comes from the [`SyncRow`] contract (query.rs) — this
+//! file declares the mapping and the table's LWW column, nothing more.
+//! The engine layer stays generic — it never names `Note`.
 
 use crate::engine::ApplyOp;
 use crate::pglite::{Pglite, str_field};
-use crate::query::{Dep, FromRow, Query, Row};
+use crate::query::{Dep, FromRow, Query, Row, SyncRow, bulk_upsert};
 use shared::{Note, Op, Table};
 use uuid::Uuid;
 use wasm_bindgen::JsValue;
 
-/// Latest-first list of all notes.
-pub const LIST_SQL: &str = "SELECT id, title, body, updated_at FROM notes ORDER BY updated_at DESC";
-
-pub const INSERT_SQL: &str = "
-    INSERT INTO notes (id, title, body, updated_at)
-    VALUES ($1, $2, $3, $4)";
-
 /// The one live query the app needs today: all notes, re-run whenever the
 /// notes table changes (any change) or a row's own dep fires.
 pub fn list_query() -> Query {
-    Query::new(LIST_SQL).dep(Dep::Table(Table::Notes))
+    Query::new(&Note::select_all_sql()).dep(Dep::Table(Table::Notes))
 }
 
 pub fn new_note(title: &str) -> Note {
@@ -39,8 +33,8 @@ fn now_iso() -> String {
 
 pub fn op_for_note(note: &Note) -> Op {
     Op {
-        table: Table::Notes,
-        id: note.id,
+        table: Note::TABLE,
+        id: note.pk(),
         data: serde_json::to_value(note).unwrap(),
         updated_at: note.updated_at.clone(),
     }
@@ -61,79 +55,41 @@ impl FromRow for Note {
     }
 }
 
+/// One declaration feeds every generated statement: local inserts, the
+/// list query, and the engine's batched LWW upserts all derive from this.
+impl SyncRow for Note {
+    const TABLE: Table = Table::Notes;
+    const COLUMNS: &'static [&'static str] = &["id", "title", "body", "updated_at"];
+    const LWW: Option<&'static str> = Some("updated_at");
+
+    fn params(&self) -> Vec<String> {
+        vec![
+            self.id.to_string(),
+            self.title.clone(),
+            self.body.clone(),
+            self.updated_at.clone(),
+        ]
+    }
+
+    fn pk(&self) -> Uuid {
+        self.id
+    }
+}
+
+/// Rows come back as JS objects; the mapping above covers them.
 impl ApplyOp for Table {
-    /// Batched apply for Events payloads and Snapshots alike: parse, dedup
-    /// to the last row per id (log order wins — that's the LWW tiebreak),
-    /// then one multi-row upsert per chunk. A fresh IndexedDB used to apply
-    /// the whole history one awaited statement at a time.
+    /// Batched apply for Events payloads and Snapshots alike — the generic
+    /// path handles parse, last-writer dedup and chunked upserts; this impl
+    /// only maps the enum variant to its row type.
     async fn apply_rows(
         self,
         db: &Pglite,
         rows: &[serde_json::Value],
     ) -> Result<Vec<Uuid>, JsValue> {
         match self {
-            Table::Notes => {
-                let mut order: Vec<Uuid> = Vec::with_capacity(rows.len());
-                let mut by_id: std::collections::HashMap<Uuid, Note> =
-                    std::collections::HashMap::with_capacity(rows.len());
-                for v in rows {
-                    let note: Note = serde_json::from_value(v.clone())
-                        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                    if !by_id.contains_key(&note.id) {
-                        order.push(note.id);
-                    }
-                    // Same id twice in one batch: the later log entry wins.
-                    by_id.insert(note.id, note);
-                }
-                let notes: Vec<Note> = order
-                    .into_iter()
-                    .map(|id| by_id.remove(&id).unwrap())
-                    .collect();
-                let ids: Vec<Uuid> = notes.iter().map(|n| n.id).collect();
-                for chunk in notes.chunks(SNAPSHOT_CHUNK) {
-                    upsert_notes(db, chunk).await?;
-                }
-                Ok(ids)
-            }
+            Table::Notes => bulk_upsert::<Note>(db, rows)
+                .await
+                .map_err(|e| JsValue::from_str(&e)),
         }
     }
-}
-
-/// Rows per bulk INSERT statement; 500 * 4 params stays well under PGlite's
-/// host-parameter limit.
-const SNAPSHOT_CHUNK: usize = 500;
-
-async fn upsert_notes(db: &Pglite, notes: &[Note]) -> Result<(), JsValue> {
-    if notes.is_empty() {
-        return Ok(());
-    }
-
-    let mut sql = String::from("INSERT INTO notes (id, title, body, updated_at) VALUES ");
-    let mut params: Vec<String> = Vec::with_capacity(notes.len() * 4);
-    for (i, note) in notes.iter().enumerate() {
-        let base = i * 4;
-        if i > 0 {
-            sql.push_str(", ");
-        }
-        sql.push_str(&format!(
-            "(${}, ${}, ${}, ${})",
-            base + 1,
-            base + 2,
-            base + 3,
-            base + 4
-        ));
-        params.push(note.id.to_string());
-        params.push(note.title.clone());
-        params.push(note.body.clone());
-        params.push(note.updated_at.clone());
-    }
-    sql.push_str(
-        " ON CONFLICT (id) DO UPDATE
-         SET title = EXCLUDED.title,
-             body = EXCLUDED.body,
-             updated_at = EXCLUDED.updated_at
-       WHERE EXCLUDED.updated_at > notes.updated_at",
-    );
-
-    db.query(&sql, &params).await.map(|_| ())
 }

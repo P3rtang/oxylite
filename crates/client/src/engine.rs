@@ -365,7 +365,7 @@ pub fn log(kind: &str, msg: &str) {
     web_sys::console::log_1(&JsValue::from_str(&format!("[{kind}] {msg}")));
 }
 
-fn error_text(e: &JsValue) -> String {
+pub(crate) fn error_text(e: &JsValue) -> String {
     e.as_string().unwrap_or_else(|| format!("{e:?}"))
 }
 

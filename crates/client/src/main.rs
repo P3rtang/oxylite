@@ -9,9 +9,9 @@ mod query;
 
 use dioxus::prelude::*;
 use engine::engine;
-use notes::{INSERT_SQL, list_query, new_note, op_for_note};
-use query::use_query;
-use shared::{Note, Table};
+use notes::{list_query, new_note, op_for_note};
+use query::{SyncRow, use_query};
+use shared::Note;
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -89,14 +89,9 @@ fn submit(mut title_input: Signal<String>) {
         let e = engine();
         let note = new_note(&t);
         e.exec(
-            INSERT_SQL,
-            &[
-                note.id.to_string(),
-                note.title.clone(),
-                note.body.clone(),
-                note.updated_at.clone(),
-            ],
-            &[(Table::Notes, note.id)],
+            &Note::insert_sql(),
+            &note.params(),
+            &[(Note::TABLE, note.id)],
         )
         .await;
         e.push(op_for_note(&note));

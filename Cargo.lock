@@ -294,6 +294,7 @@ dependencies = [
  "console_error_panic_hook",
  "dioxus",
  "js-sys",
+ "serde",
  "serde_json",
  "shared",
  "thiserror 2.0.20",
