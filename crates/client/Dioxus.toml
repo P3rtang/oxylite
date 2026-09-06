@@ -1,0 +1,7 @@
+[application]
+name = "offline-notes"
+asset_dir = "assets"
+
+[web.app]
+# everything is served from the axum server root
+base_path = "/"
