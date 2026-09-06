@@ -296,6 +296,7 @@ dependencies = [
  "js-sys",
  "serde_json",
  "shared",
+ "thiserror 2.0.20",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",

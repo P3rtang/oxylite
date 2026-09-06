@@ -29,6 +29,18 @@ pub trait ApplyOp {
     async fn apply_op(self, db: &Pglite, op: &Op) -> Result<(), JsValue>;
 }
 
+/// Why a query call failed, surfaced to call sites via `Signal<Result<..>>`
+/// so the UI can render error states instead of silently empty lists.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EngineError {
+    /// The local DB could not be opened or migrated (storage, wasm heap).
+    #[error("db init failed: {0}")]
+    DbInit(String),
+    /// The SQL failed or a row didn't map to the result type (FromRow).
+    #[error("query failed: {0}")]
+    Query(String),
+}
+
 /// Connection status for the UI status line. A GlobalSignal because it is
 /// engine-owned (not per-component) and must initialize outside any dioxus
 /// scope — plain `Signal::new` panics outside the runtime.
@@ -99,21 +111,23 @@ impl Engine {
 
     /// One-shot local read, mapped to `T` via its FromRow impl. Works
     /// regardless of connection state — reads never wait on the network.
+    /// Failures are typed so call sites can render them (see use_query).
     pub async fn query<T: crate::query::FromRow>(
         &self,
         q: &crate::query::Query,
-    ) -> Result<Vec<T>, String> {
+    ) -> Result<Vec<T>, EngineError> {
         let db = Pglite::init(shared::MIGRATIONS)
             .await
-            .map_err(|e| error_text(&e))?;
+            .map_err(|e| EngineError::DbInit(error_text(&e)))?;
         let result = db
             .query(&q.sql, &q.params)
             .await
-            .map_err(|e| error_text(&e))?;
+            .map_err(|e| EngineError::Query(error_text(&e)))?;
         pglite::rows_of(&result)
             .iter()
             .map(|row| T::from_row(row))
-            .collect()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(EngineError::Query)
     }
 
     /// Run a local write, then invalidate queries depending on `touched` —

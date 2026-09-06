@@ -5,7 +5,7 @@
 //! or a specific row change (row-level listeners). No component ever touches
 //! the websocket; the Engine owns that and bumps query revisions here.
 
-use crate::engine::{engine, log};
+use crate::engine::{EngineError, engine, log};
 use dioxus::prelude::*;
 use shared::Table;
 use std::rc::Rc;
@@ -125,13 +125,11 @@ impl Subscription {
 /// The engine knows nothing about `T`; mapping is a generic `FromRow`
 /// implementation. Params are fixed for the component's lifetime (a param
 /// change re-creating the subscription is future work).
-pub fn use_query<T: FromRow + 'static>(query: Query) -> Signal<Vec<T>> {
-    let mut out = use_signal(Vec::<T>::new);
+pub fn use_query<T: FromRow + 'static>(query: Query) -> Signal<Result<Vec<T>, EngineError>> {
+    let mut out = use_signal(|| Ok(Vec::<T>::new()));
     let rev = use_signal(|| 0u64);
     let run_query = query.clone();
 
-    // Register once per component lifetime; the returned guard
-    // unsubscribes when this component's hook state is dropped.
     // Registered for this component's lifetime; the guard's Drop (last
     // handle) unsubscribes when the hook state is released.
     let _subscription = use_hook(|| engine().listen(query, rev));
@@ -143,8 +141,11 @@ pub fn use_query<T: FromRow + 'static>(query: Query) -> Signal<Vec<T>> {
         let q = run_query.clone();
         spawn(async move {
             match engine().query::<T>(&q).await {
-                Ok(rows) => out.set(rows),
-                Err(e) => log("query", &format!("query failed: {e}")),
+                Ok(rows) => out.set(Ok(rows)),
+                Err(e) => {
+                    log("query", &format!("{e}"));
+                    out.set(Err(e));
+                }
             }
         });
     });

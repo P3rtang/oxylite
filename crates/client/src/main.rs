@@ -22,8 +22,10 @@ fn main() {
 #[component]
 fn App() -> Element {
     // The entire data integration: one live query. Re-runs whenever the
-    // notes table changes, locally or via server events.
-    let notes = use_query::<Note>(list_query());
+    // notes table changes, locally or via server events. Errors surface
+    // here instead of a silently empty list.
+    let result = use_query::<Note>(list_query());
+    let notes_state = result.read().clone();
     let status = engine::STATUS.read().clone();
     let mut title_input = use_signal(String::new);
 
@@ -58,8 +60,11 @@ fn App() -> Element {
                     "Add"
                 }
             }
+            if let Err(e) = &notes_state {
+                p { style: "color:#b00", "load failed: {e}" }
+            }
             ul { style: "margin-top: 1rem; line-height: 1.8",
-                for note in notes.read().iter() {
+                for note in notes_state.as_ref().unwrap_or(&Vec::new()).iter() {
                     li { key: "{note.id}",
                         strong { "{note.title}" }
                         span { style: "color:#999", " · {note.updated_at}" }
