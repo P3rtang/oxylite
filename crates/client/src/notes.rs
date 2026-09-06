@@ -10,8 +10,7 @@ use uuid::Uuid;
 use wasm_bindgen::JsValue;
 
 /// Latest-first list of all notes.
-pub const LIST_SQL: &str =
-    "SELECT id, title, body, updated_at FROM notes ORDER BY updated_at DESC";
+pub const LIST_SQL: &str = "SELECT id, title, body, updated_at FROM notes ORDER BY updated_at DESC";
 
 pub const INSERT_SQL: &str = "
     INSERT INTO notes (id, title, body, updated_at)

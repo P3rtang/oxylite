@@ -8,6 +8,7 @@
 use crate::engine::{engine, log};
 use dioxus::prelude::*;
 use shared::Table;
+use std::rc::Rc;
 use uuid::Uuid;
 
 /// A raw row from the local DB: a JS object keyed by column name, with
@@ -80,7 +81,7 @@ pub trait FromRow: Sized {
 /// Subscription id: identifies a registered query for unregistration.
 pub type SubId = Uuid;
 
-/// A live query subscription. The engine keeps it registered until dropped.
+/// A live query registered with the engine.
 #[derive(Clone)]
 pub(crate) struct Sub {
     pub(crate) id: SubId,
@@ -88,8 +89,29 @@ pub(crate) struct Sub {
     pub(crate) rev: Signal<u64>,
 }
 
+/// RAII subscription guard: the "unsub callback" is its Drop impl, so a
+/// component literally cannot leak a registration — when the hook state is
+/// dropped (component unmounted), the engine forgets the query. The id
+/// stays engine-internal; callers never need it.
+pub struct Subscription {
+    id: SubId,
+}
+
+impl Subscription {
+    pub(crate) fn new(id: SubId) -> Self {
+        Self { id }
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        engine().unsubscribe(self.id);
+    }
+}
+
 /// Dioxus hook: run a query once now, then re-run whenever its deps fire
-/// (locally or via server events). Unregisters on unmount.
+/// (locally or via server events). Unregisters on unmount via the
+/// subscription guard's Drop.
 ///
 /// The engine knows nothing about `T`; mapping is a generic `FromRow`
 /// implementation. Params are fixed for the component's lifetime (a param
@@ -97,20 +119,11 @@ pub(crate) struct Sub {
 pub fn use_query<T: FromRow + 'static>(query: Query) -> Signal<Vec<T>> {
     let mut out = use_signal(Vec::<T>::new);
     let rev = use_signal(|| 0u64);
-    let mut sub_id = use_signal(|| None::<Uuid>);
     let run_query = query.clone();
 
-    // Registration must run before the re-run effect below reads `rev`, so
-    // the engine already knows our deps when its event loop bumps them.
-    use_effect(move || {
-        let id = engine().listen(query.clone(), rev);
-        sub_id.set(Some(id));
-    });
-    use_drop(move || {
-        if let Some(id) = sub_id() {
-            engine().unsubscribe(id);
-        }
-    });
+    // Register once per component lifetime; the returned guard
+    // unsubscribes when this component's hook state is dropped.
+    let _subscription = use_hook(|| Rc::new(engine().listen(query, rev)));
 
     // Initial load + re-run on every invalidation of our deps. Reading
     // `rev` inside the effect subscribes us to those bumps.

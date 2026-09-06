@@ -12,7 +12,7 @@
 //! firing mid-await can never hit a borrowed RefCell.
 
 use crate::pglite::{self, Pglite};
-use crate::query::{Sub, SubId};
+use crate::query::{Query, Sub, SubId};
 use dioxus::prelude::{Global, Signal, WritableExt};
 use shared::{ClientMsg, Op, ServerMsg, Table};
 use std::cell::{Cell, RefCell};
@@ -73,9 +73,10 @@ pub fn engine() -> Rc<Engine> {
 }
 
 impl Engine {
-    /// Register a live query; returns its subscription id. Re-registering
-    /// the same query id refreshes its deps instead of duplicating.
-    pub fn listen(&self, q: crate::query::Query, rev: Signal<u64>) -> SubId {
+    /// Register a live query; returns an RAII guard whose Drop unsubscribes.
+    /// Re-registering the same query id refreshes its deps instead of
+    /// duplicating.
+    pub fn listen(&self, q: Query, rev: Signal<u64>) -> Rc<crate::query::Subscription> {
         let mut subs = self.subs.borrow_mut();
         if let Some(existing) = subs.iter_mut().find(|s| s.id == q.id) {
             existing.deps = q.deps;
@@ -87,7 +88,7 @@ impl Engine {
                 rev,
             });
         }
-        q.id
+        Rc::new(crate::query::Subscription::new(q.id))
     }
 
     /// Remove a subscription (component unmounted).
