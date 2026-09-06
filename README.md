@@ -45,6 +45,10 @@ S->C  {"type":"Events","events":[…],"cursor":57}
 ## Setup
 
 ```bash
+# dev loop with hot reload: axum on :3000, dx dev server on :8081
+# (proxies /sync and /pglite to :3000 — open http://localhost:8081)
+./scripts/dev.sh
+
 # one command: postgres + server + built client, opens the browser
 ./scripts/browser.sh
 ```

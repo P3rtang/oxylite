@@ -5,3 +5,13 @@ asset_dir = "assets"
 [web.app]
 # everything is served from the axum server root
 base_path = "/"
+
+# `dx serve` runs its own dev server (default :8080); these paths proxy to
+# the axum sync server on :3000 so the app works unchanged while iterating.
+[[web.proxy]]
+# 127.0.0.1, not `localhost` — the dev server may resolve localhost to ::1
+# while the axum server binds IPv4 only, which fails the proxy with 502.
+backend = "http://127.0.0.1:3000/sync"
+
+[[web.proxy]]
+backend = "http://127.0.0.1:3000/pglite"
