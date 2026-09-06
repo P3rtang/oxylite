@@ -1,13 +1,13 @@
 mod sync;
 
 use axum::{
+    Router,
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use shared::{ClientMsg, ServerMsg};
 use std::time::Duration;
@@ -57,10 +57,7 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn sync_ws(
-    ws: WebSocketUpgrade,
-    State(db): State<sqlx::PgPool>,
-) -> impl IntoResponse {
+async fn sync_ws(ws: WebSocketUpgrade, State(db): State<sqlx::PgPool>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, db))
 }
 
@@ -82,9 +79,7 @@ async fn handle_socket(mut socket: WebSocket, db: sqlx::PgPool) {
             match sync::pull_since(&ticker_db, stream_cursor).await {
                 Ok((events, cursor)) if !events.is_empty() => {
                     stream_cursor = cursor;
-                    let _ = out_tx
-                        .send(ServerMsg::Events { events, cursor })
-                        .await;
+                    let _ = out_tx.send(ServerMsg::Events { events, cursor }).await;
                 }
                 Ok(_) => {}
                 Err(e) => eprintln!("stream error: {e}"),

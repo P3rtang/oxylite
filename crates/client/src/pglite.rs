@@ -1,5 +1,6 @@
+use core::cell::RefCell;
 use js_sys::Function;
-use wasm_bindgen::{prelude::wasm_bindgen, JsCast, JsValue};
+use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 
 /// Rust bridge to the vendored PGlite (the official ESM bundle copied
 /// verbatim into `crates/client/assets/pglite/`). No JS of our own is
@@ -9,8 +10,18 @@ use wasm_bindgen::{prelude::wasm_bindgen, JsCast, JsValue};
 /// PGlite persists its data dir in IndexedDB via its IdbFs
 /// (`dataDir: "idb://offline_notes"`), so writes survive page reloads and
 /// keep the app functional while the server is unreachable.
+#[derive(Clone)]
 pub struct Pglite {
     instance: JsValue,
+}
+
+// Singleton handle, embedded-book style (peripherals/singletons): an
+// Option-typed static that init fills exactly once and everyone else
+// borrows a cheap clone of. wasm runs single-threaded here, so a
+// thread_local + RefCell is sound WITHOUT the unsafe `static mut` +
+// taken-flag dance the embedded version needs on real hardware.
+thread_local! {
+    static INSTANCE: RefCell<Option<Pglite>> = const { RefCell::new(None) };
 }
 
 #[wasm_bindgen]
@@ -24,20 +35,30 @@ impl Pglite {
     /// `migrations` (the shared set, see `shared::MIGRATIONS`) before anyone
     /// can touch it.
     ///
+    /// Singleton lifecycle, embedded-book style: once a construction
+    /// succeeds, `INSTANCE` holds an owned `Pglite` and every later call
+    /// returns a cheap clone — callers can hand `&Pglite` around without
+    /// re-initializing. `init` never returns `None`-take semantics (unlike
+    /// `Peripherals::take`): the UI calls it from many tasks, so re-joining
+    /// the live instance is the point, not a borrow-checker escape hatch.
+    ///
     /// `new PGlite(...)` must happen in JS — wasm-bindgen `call` cannot
     /// construct ES classes — so this is driven by an eval'd snippet. The
-    /// snippet stores its construction promise on `globalThis.__pgliteReady`
-    /// so every concurrent caller (double use_effect, UI callbacks) shares
-    /// ONE instance instead of racing two emscripten modules on the same
-    /// IndexedDB dir. wasm-bindgen async externs auto-await the returned
-    /// promise, so `eval_js` resolves to the instance itself.
+    /// snippet keeps its in-flight promise on `globalThis.__pgliteReady` so
+    /// two Rust tasks racing `init` before either has a resolved instance
+    /// share ONE construction instead of opening two emscripten modules on
+    /// the same IndexedDB dir. (A pending promise can't be cached in Rust
+    /// without extra plumbing, so the in-flight guard lives in JS; the
+    /// resolved instance is stored Rust-side, in `INSTANCE`.)
+    /// wasm-bindgen async externs auto-await the returned promise, so
+    /// `eval_js` resolves to the instance itself.
     ///
     /// PGlite 0.5.x has no built-in migration runner, so the snippet applies
     /// the shared migrations itself: applied names are tracked in the
     /// client's own `meta` table, mirroring sqlx's `_sqlx_migrations`.
     pub async fn init(migrations: &[(&'static str, &'static str)]) -> Result<Pglite, JsValue> {
-        if let Some(existing) = open_instance() {
-            return Ok(Pglite { instance: existing });
+        if let Some(existing) = INSTANCE.with(|i| i.borrow().clone()) {
+            return Ok(existing);
         }
 
         // The server serves the vendored bundle at /pglite/ with proper MIME
@@ -86,7 +107,9 @@ impl Pglite {
                                 );
                             }}
                         }}
-                        globalThis.__pglite = db;
+                        // The resolved instance is stored Rust-side (the
+                        // thread_local singleton); this promise only exists
+                        // to dedupe concurrent in-flight constructions.
                         return db;
                     }})();
                     // Drop a failed init so the next call retries cleanly.
@@ -99,9 +122,16 @@ impl Pglite {
         );
 
         // Ok(value) = the auto-awaited construction promise resolving to the
-        // PGlite instance; Err(value) = its rejection reason.
+        // PGlite instance; Err(value) = its rejection reason. Only a
+        // successful construction is stored, so a failed init leaves the
+        // singleton empty and the next call retries (mirroring the JS-side
+        // `catch` that clears `__pgliteReady`).
         match eval_js(&code).await {
-            Ok(instance) => Ok(Pglite { instance }),
+            Ok(instance) => {
+                let p = Pglite { instance };
+                INSTANCE.with(|i| *i.borrow_mut() = Some(p.clone()));
+                Ok(p)
+            }
             Err(e) => Err(JsValue::from_str(&error_text(&e))),
         }
     }
@@ -109,18 +139,15 @@ impl Pglite {
     /// Run a single statement with bound string parameters, returning the
     /// result object ({ rows: [...], fields: [...] }).
     pub async fn query(&self, sql: &str, params: &[String]) -> Result<JsValue, JsValue> {
-        let q: Function =
-            js_sys::Reflect::get(&self.instance, &"query".into())?.dyn_into()?;
-        let arr = params.iter().map(|p| JsValue::from_str(p)).collect::<js_sys::Array>();
+        let q: Function = js_sys::Reflect::get(&self.instance, &"query".into())?.dyn_into()?;
+        let arr = params
+            .iter()
+            .map(|p| JsValue::from_str(p))
+            .collect::<js_sys::Array>();
         let ret = q.call2(&self.instance, &JsValue::from_str(sql), &arr.into())?;
         let promise: js_sys::Promise = ret.dyn_into()?;
         wasm_bindgen_futures::JsFuture::from(promise).await
     }
-}
-
-fn open_instance() -> Option<JsValue> {
-    let v = js_sys::Reflect::get(&js_sys::global(), &"__pglite".into()).ok()?;
-    (!v.is_undefined() && !v.is_null()).then_some(v)
 }
 
 /// Extract a readable message from a JS error object.

@@ -1,73 +1,36 @@
+//! Offline-first notes UI. All data flows through the sync engine
+//! (engine.rs): this file only wires components — one live query for the
+//! list, one submit path, no sockets, no global state beyond the engine.
+
+mod engine;
+mod notes;
 mod pglite;
-mod sync;
+mod query;
 
 use dioxus::prelude::*;
-use pglite::{Pglite, rows_of, str_field};
-use shared::{MIGRATIONS, Note, ServerMsg, ClientMsg};
-use sync::{
-    apply_events, load_cursor, log, new_note, note_to_op, open_socket, push_pending,
-    save_cursor, send, sync_url, take_inbox, take_pending,
-};
-use wasm_bindgen::{JsCast, closure::Closure};
-use web_sys::WebSocket;
+use engine::engine;
+use notes::{INSERT_SQL, list_query, new_note, op_for_note};
+use query::use_query;
+use shared::{Note, Table};
 
 fn main() {
     console_error_panic_hook::set_once();
+    engine::init();
     dioxus::launch(App);
 }
 
-const LIST_SQL: &str =
-    "SELECT id, title, body, updated_at FROM notes ORDER BY updated_at DESC";
-
-const INSERT_SQL: &str = "
-    INSERT INTO notes (id, title, body, updated_at)
-    VALUES ($1, $2, $3, $4)";
-
 #[component]
 fn App() -> Element {
-    let mut notes = use_signal(Vec::<Note>::new);
-    let mut status = use_signal(|| "starting…".to_string());
-    let mut cursor = use_signal(|| -1i64);
-    let mut ws = use_signal(|| None::<WebSocket>);
+    // The entire data integration: one live query. Re-runs whenever the
+    // notes table changes, locally or via server events.
+    let notes = use_query::<Note>(list_query());
+    let status = engine::STATUS.read().clone();
     let mut title_input = use_signal(String::new);
 
-    // Bootstrap and sync loop. This is the only long-lived task: JS
-    // callbacks (socket onmessage) merely enqueue server messages, so no
-    // task is ever spawned from outside a dioxus scope.
+    // The only long-lived task in the app: the engine's connect loop.
     use_effect(move || {
         spawn(async move {
-            let pglite = match Pglite::init(MIGRATIONS).await {
-                Ok(p) => p,
-                Err(e) => {
-                    status.set(format!("pglite failed: {}", pglite_error(&e)));
-                    return;
-                }
-            };
-            log("boot", "pglite ready");
-            *cursor.write() = load_cursor(&pglite).await;
-            refresh(&mut notes).await;
-            status.set("offline — local data loaded".into());
-
-            loop {
-                status.set("connecting…".into());
-                match open_socket(&sync_url()) {
-                    Ok(sock) => {
-                        ws.set(Some(sock.clone()));
-                        status.set("connected".into());
-                        log("sync", "connected");
-                        sync_session(&sock, cursor, &pglite, notes).await;
-                        ws.set(None);
-                        log("sync", "disconnected — retrying in 3s");
-                        status.set("offline — will retry…".into());
-                        timer_pause(3000).await;
-                    }
-                    Err(e) => {
-                        log("sync", &format!("connect failed: {e:?}"));
-                        status.set("offline — will retry…".into());
-                        timer_pause(3000).await;
-                    }
-                }
-            }
+            engine().run().await;
         });
     });
 
@@ -85,13 +48,13 @@ fn App() -> Element {
                     oninput: move |e| title_input.set(e.value().to_string()),
                     onkeydown: move |e| {
                         if e.key() == Key::Enter {
-                            submit(title_input, ws, notes);
+                            submit(title_input);
                         }
                     },
                 }
                 button {
                     style: "padding:6px 14px",
-                    onclick: move |_| submit(title_input, ws, notes),
+                    onclick: move |_| submit(title_input),
                     "Add"
                 }
             }
@@ -107,119 +70,30 @@ fn App() -> Element {
     }
 }
 
-/// Store the note locally, then push it (or queue it while offline) and
-/// refresh the UI. Shared by the Add button and the Enter key.
-fn submit(
-    mut title_input: Signal<String>,
-    ws: Signal<Option<WebSocket>>,
-    mut notes: Signal<Vec<Note>>,
-) {
+/// Store the note locally, then push it (or queue it while offline). The
+/// engine's invalidation bump re-runs the live list query — no manual
+/// refresh, and the exact same path a remote event takes.
+fn submit(mut title_input: Signal<String>) {
     let t = title_input.read().clone();
-    if t.is_empty() { return; }
+    if t.is_empty() {
+        return;
+    }
     title_input.set(String::new());
 
-    let note = new_note(&t);
     spawn(async move {
-        let pglite = Pglite::init(MIGRATIONS).await.expect("pglite ready");
-        pglite.query(INSERT_SQL, &[
-            note.id.to_string(),
-            note.title.clone(),
-            note.body.clone(),
-            note.updated_at.clone(),
-        ]).await.expect("insert note");
-
-        match &*ws.read() {
-            Some(sock) if sock.ready_state() == WebSocket::OPEN => {
-                send(sock, &ClientMsg::Push { ops: vec![note_to_op(&note)] });
-            }
-            _ => push_pending(note_to_op(&note)),
-        }
-        refresh(&mut notes).await;
+        let e = engine();
+        let note = new_note(&t);
+        e.exec(
+            INSERT_SQL,
+            &[
+                note.id.to_string(),
+                note.title.clone(),
+                note.body.clone(),
+                note.updated_at.clone(),
+            ],
+            &[(Table::Notes, note.id)],
+        )
+        .await;
+        e.push(op_for_note(&note));
     });
-}
-
-/// Reload the note list from the local DB into the UI signal.
-async fn refresh(notes: &mut Signal<Vec<Note>>) {
-    let pglite = Pglite::init(MIGRATIONS).await.expect("pglite ready");
-    let rows = pglite.query(LIST_SQL, &[]).await.expect("query notes");
-    notes.set(rows_of(&rows).into_iter().map(|row| Note {
-        id: str_field(&row, "id").unwrap().parse().unwrap(),
-        title: str_field(&row, "title").unwrap(),
-        body: str_field(&row, "body").unwrap(),
-        updated_at: str_field(&row, "updated_at").unwrap(),
-    }).collect());
-}
-
-/// One connected session: flush the initial pull + pending pushes, then
-/// drain the inbox until the socket closes. Returns to the caller's
-/// reconnect loop.
-async fn sync_session(
-    sock: &WebSocket,
-    mut cursor: Signal<i64>,
-    pglite: &Pglite,
-    mut notes: Signal<Vec<Note>>,
-) {
-    let mut flushed = false;
-    let mut connecting_ms = 0u32;
-    loop {
-        match sock.ready_state() {
-            WebSocket::CONNECTING => {
-                // A handshake can hang (firewall, proxy, mock); give up and
-                // let the caller reconnect rather than waiting forever.
-                connecting_ms += 100;
-                if connecting_ms > 5000 {
-                    log("sync", "handshake timeout — treating as offline");
-                    return;
-                }
-                timer_pause(100).await;
-            }
-            WebSocket::OPEN => {
-                if !flushed {
-                    flushed = true;
-                    send(sock, &ClientMsg::Pull { since: *cursor.read() });
-                    for op in take_pending() {
-                        send(sock, &ClientMsg::Push { ops: vec![op] });
-                    }
-                }
-                for msg in take_inbox() {
-                    match msg {
-                        ServerMsg::Ack { .. } => {
-                            // The server may hold events we haven't seen; pull again.
-                            send(sock, &ClientMsg::Pull { since: *cursor.read() });
-                        }
-                        ServerMsg::Events { events, cursor: c } => {
-                            log("sync", &format!("received {} events, cursor -> {}", events.len(), c));
-                            *cursor.write() = c;
-                            apply_events(pglite, &events).await;
-                            save_cursor(pglite, c).await;
-                            refresh(&mut notes).await;
-                        }
-                    }
-                }
-                timer_pause(150).await;
-            }
-            _ => return, // closed or closing: reconnect in the outer loop
-        }
-    }
-}
-
-/// Sleep in the browser without tokio (wasm has no time driver).
-async fn timer_pause(ms: u32) {
-    let p = js_sys::Promise::new(&mut |resolve, _reject| {
-        let cb = Closure::wrap(Box::new(move || {
-            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
-        }) as Box<dyn FnMut()>);
-        let _ = web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                ms as i32,
-            );
-        cb.forget();
-    });
-    wasm_bindgen_futures::JsFuture::from(p).await.ok();
-}
-
-fn pglite_error(e: &wasm_bindgen::JsValue) -> String {
-    e.as_string().unwrap_or_else(|| format!("{e:?}"))
 }
