@@ -20,8 +20,9 @@ unsafe extern "C" {
 }
 
 impl Pglite {
-    /// Open (or reopen) the persistent offline database, applying `schema`
-    /// (multi-statement, IF NOT EXISTS) before anyone can touch it.
+    /// Open (or reopen) the persistent offline database, applying
+    /// `migrations` (the shared set, see `shared::MIGRATIONS`) before anyone
+    /// can touch it.
     ///
     /// `new PGlite(...)` must happen in JS — wasm-bindgen `call` cannot
     /// construct ES classes — so this is driven by an eval'd snippet. The
@@ -30,7 +31,11 @@ impl Pglite {
     /// ONE instance instead of racing two emscripten modules on the same
     /// IndexedDB dir. wasm-bindgen async externs auto-await the returned
     /// promise, so `eval_js` resolves to the instance itself.
-    pub async fn init(schema: &str) -> Result<Pglite, JsValue> {
+    ///
+    /// PGlite 0.5.x has no built-in migration runner, so the snippet applies
+    /// the shared migrations itself: applied names are tracked in the
+    /// client's own `meta` table, mirroring sqlx's `_sqlx_migrations`.
+    pub async fn init(migrations: &[(&'static str, &'static str)]) -> Result<Pglite, JsValue> {
         if let Some(existing) = open_instance() {
             return Ok(Pglite { instance: existing });
         }
@@ -38,10 +43,17 @@ impl Pglite {
         // The server serves the vendored bundle at /pglite/ with proper MIME
         // types. A dynamic import inside eval() can only resolve absolute
         // URLs, so build the full URL from the document location.
-        let schema_json = schema
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n");
+        let migs: Vec<String> = migrations
+            .iter()
+            .map(|(name, up)| {
+                format!(
+                    "{{\"name\":{},\"up\":{}}}",
+                    serde_json::to_string(name).unwrap(),
+                    serde_json::to_string(up).unwrap()
+                )
+            })
+            .collect();
+        let migs = migs.join(",");
         let code = format!(
             r#"(async () => {{
                 if (!globalThis.__pgliteReady) {{
@@ -54,7 +66,26 @@ impl Pglite {
                             // without the server.
                             dataDir: "idb://offline_notes",
                         }});
-                        await db.exec("{schema_json}");
+                        // Bootstrap the migration tracker before anything
+                        // else, then apply pending migrations apply-once like
+                        // sqlx does server-side (tracked in the client's meta
+                        // table). Idempotent DDL keeps a half-applied set
+                        // healable.
+                        await db.exec(
+                            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                        );
+                        for (const m of [{migs}]) {{
+                            const key = "migration:" + m.name;
+                            const seen = await db.query(
+                                "SELECT 1 FROM meta WHERE key = $1", [key]);
+                            if (seen.rows.length === 0) {{
+                                await db.exec(m.up);
+                                await db.query(
+                                    "INSERT INTO meta (key, value) VALUES ($1, '1')",
+                                    [key],
+                                );
+                            }}
+                        }}
                         globalThis.__pglite = db;
                         return db;
                     }})();

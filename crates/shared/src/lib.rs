@@ -38,3 +38,13 @@ pub enum ServerMsg {
 }
 
 pub const NOTES_TABLE: &str = "notes";
+
+/// The schema migrations, applied in order by both sides from this single
+/// source: the server via `sqlx::migrate!` (same directory, embedded at
+/// compile time, tracked in `_sqlx_migrations`); each client applies them on
+/// first boot against its own PGlite (tracked in the `meta` table).
+pub static MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_notes", include_str!("../migrations/0001_notes.sql")),
+    ("0002_sync_log", include_str!("../migrations/0002_sync_log.sql")),
+    ("0003_meta", include_str!("../migrations/0003_meta.sql")),
+];

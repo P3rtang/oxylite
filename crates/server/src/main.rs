@@ -24,12 +24,11 @@ async fn main() {
         .await
         .expect("connect to postgres");
 
-    // schema.sql is a multi-statement script; raw_sql uses the simple query
-    // protocol which supports that.
-    sqlx::raw_sql(include_str!("../schema.sql"))
-        .execute(&db)
+    // Same migration files the clients run against PGlite (see shared::MIGRATIONS).
+    sqlx::migrate!("../shared/migrations")
+        .run(&db)
         .await
-        .expect("apply schema");
+        .expect("apply migrations");
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))

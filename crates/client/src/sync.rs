@@ -136,7 +136,9 @@ pub fn note_to_op(note: &Note) -> Op {
 
 pub fn new_note(title: &str) -> Note {
     Note {
-        id: Uuid::new_v4(),
+        // UUIDv7: time-ordered, so both the local and remote primary-key
+        // indexes stay hot and rows sort by creation.
+        id: Uuid::now_v7(),
         title: title.into(),
         body: String::new(),
         updated_at: now_iso(),

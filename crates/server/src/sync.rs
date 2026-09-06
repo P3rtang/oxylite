@@ -1,6 +1,5 @@
 use shared::{Op, NOTES_TABLE};
 use sqlx::postgres::PgPool;
-use uuid::Uuid;
 
 /// Upsert each note and append it to the sync log (server side).
 pub async fn push(db: &PgPool, ops: &[Op]) -> Result<i64, String> {
@@ -16,7 +15,7 @@ pub async fn push(db: &PgPool, ops: &[Op]) -> Result<i64, String> {
         // LWW: the server is the source of truth for concurrent edits.
         sqlx::query(
             "INSERT INTO notes (id, title, body, updated_at)
-             VALUES ($1, $2, $3, $4::timestamptz)
+             VALUES ($1, $2, $3, $4)
              ON CONFLICT (id) DO UPDATE
                SET title = EXCLUDED.title,
                    body = EXCLUDED.body,
@@ -69,7 +68,7 @@ pub async fn pull_since(
         return Ok((Vec::new(), cursor));
     }
 
-    let rows: Vec<(String, Uuid, serde_json::Value)> = sqlx::query_as(
+    let rows: Vec<(String, sqlx::types::Uuid, serde_json::Value)> = sqlx::query_as(
         "SELECT table_name, row_id, payload
          FROM sync_log WHERE seq > $1 ORDER BY seq LIMIT 1000",
     )

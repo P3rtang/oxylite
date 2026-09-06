@@ -3,7 +3,7 @@ mod sync;
 
 use dioxus::prelude::*;
 use pglite::{Pglite, rows_of, str_field};
-use shared::{ClientMsg, Note, ServerMsg};
+use shared::{MIGRATIONS, Note, ServerMsg, ClientMsg};
 use sync::{
     apply_events, load_cursor, log, new_note, note_to_op, open_socket, push_pending,
     save_cursor, send, sync_url, take_inbox, take_pending,
@@ -15,19 +15,6 @@ fn main() {
     console_error_panic_hook::set_once();
     dioxus::launch(App);
 }
-
-const SCHEMA: &str = "
-    CREATE TABLE IF NOT EXISTS notes (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL DEFAULT '',
-        body TEXT NOT NULL DEFAULT '',
-        updated_at TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-    );
-";
 
 const LIST_SQL: &str =
     "SELECT id, title, body, updated_at FROM notes ORDER BY updated_at DESC";
@@ -49,7 +36,7 @@ fn App() -> Element {
     // task is ever spawned from outside a dioxus scope.
     use_effect(move || {
         spawn(async move {
-            let pglite = match Pglite::init(SCHEMA).await {
+            let pglite = match Pglite::init(MIGRATIONS).await {
                 Ok(p) => p,
                 Err(e) => {
                     status.set(format!("pglite failed: {}", pglite_error(&e)));
@@ -133,7 +120,7 @@ fn submit(
 
     let note = new_note(&t);
     spawn(async move {
-        let pglite = Pglite::init(SCHEMA).await.expect("pglite ready");
+        let pglite = Pglite::init(MIGRATIONS).await.expect("pglite ready");
         pglite.query(INSERT_SQL, &[
             note.id.to_string(),
             note.title.clone(),
@@ -153,7 +140,7 @@ fn submit(
 
 /// Reload the note list from the local DB into the UI signal.
 async fn refresh(notes: &mut Signal<Vec<Note>>) {
-    let pglite = Pglite::init(SCHEMA).await.expect("pglite ready");
+    let pglite = Pglite::init(MIGRATIONS).await.expect("pglite ready");
     let rows = pglite.query(LIST_SQL, &[]).await.expect("query notes");
     notes.set(rows_of(&rows).into_iter().map(|row| Note {
         id: str_field(&row, "id").unwrap().parse().unwrap(),
