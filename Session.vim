@@ -10,15 +10,17 @@ if expand('%') == '' && !&modified && line('$') <= 1 && getline(1) == ''
 endif
 let s:shortmess_save = &shortmess
 set shortmess+=aoO
-badd +90 crates/client/src/engine.rs
-badd +148 crates/client/src/query.rs
+badd +415 crates/client/src/engine.rs
+badd +65 crates/client/src/query.rs
 badd +295 ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/dioxus-core-0.7.10/src/global_context.rs
 badd +9 scripts/dev.sh
+badd +75 ~/projects/pglite-test/crates/client/src/pglite.rs
+badd +32 crates/client/src/notes.rs
 argglobal
 %argdel
-edit crates/client/src/engine.rs
+edit crates/client/src/notes.rs
 argglobal
-balt scripts/dev.sh
+balt crates/client/src/query.rs
 setlocal foldmethod=expr
 setlocal foldexpr=v:lua.vim.treesitter.foldexpr()
 setlocal foldmarker={{{,}}}
@@ -27,12 +29,14 @@ setlocal foldlevel=99
 setlocal foldminlines=1
 setlocal foldnestmax=20
 setlocal foldenable
-let s:l = 51 - ((33 * winheight(0) + 31) / 62)
+60
+sil! normal! zo
+let s:l = 60 - ((26 * winheight(0) + 31) / 62)
 if s:l < 1 | let s:l = 1 | endif
 keepjumps exe s:l
 normal! zt
-keepjumps 51
-normal! 036|
+keepjumps 60
+normal! 011|
 tabnext 1
 if exists('s:wipebuf') && len(win_findbuf(s:wipebuf)) == 0 && getbufvar(s:wipebuf, '&buftype') isnot# 'terminal'
   silent exe 'bwipe ' . s:wipebuf

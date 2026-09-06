@@ -5,16 +5,10 @@
 
 use crate::engine::ApplyOp;
 use crate::pglite::{Pglite, str_field};
-use crate::query::{Dep, FromRow, Query, Row, SyncRow, bulk_upsert};
+use crate::query::{FromRow, Row, SyncRow, bulk_upsert};
 use shared::{Note, Op, Table};
 use uuid::Uuid;
 use wasm_bindgen::JsValue;
-
-/// The one live query the app needs today: all notes, re-run whenever the
-/// notes table changes (any change) or a row's own dep fires.
-pub fn list_query() -> Query {
-    Query::new(&Note::select_all_sql()).dep(Dep::Table(Table::Notes))
-}
 
 pub fn new_note(title: &str) -> Note {
     Note {

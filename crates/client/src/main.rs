@@ -9,8 +9,8 @@ mod query;
 
 use dioxus::prelude::*;
 use engine::engine;
-use notes::{list_query, new_note, op_for_note};
-use query::{SyncRow, use_query};
+use notes::{new_note, op_for_note};
+use query::{SyncRow, use_all};
 use shared::Note;
 
 fn main() {
@@ -24,7 +24,7 @@ fn App() -> Element {
     // The entire data integration: one live query. Re-runs whenever the
     // notes table changes, locally or via server events. Errors surface
     // here instead of a silently empty list.
-    let result = use_query::<Note>(list_query());
+    let result = use_all::<Note>();
     let notes_state = result.read().clone();
     let status = engine::STATUS.read().clone();
     let mut title_input = use_signal(String::new);

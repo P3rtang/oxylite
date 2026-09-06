@@ -274,3 +274,13 @@ pub fn use_query<T: FromRow + 'static>(query: Query) -> Signal<Result<Vec<T>, En
 
     out
 }
+
+/// The zero-config read for a synced type: `use_all::<Note>()` — the
+/// SyncRow-generated all-rows query, live on its whole table. Generic
+/// methods like this are the point of the contract: any row type that
+/// impls it gets the full read/write machinery, and anything bespoke
+/// (joined views, filtered lists) overrides the defaults or passes its
+/// own `Query` to `use_query`.
+pub fn use_all<T: SyncRow + 'static>() -> Signal<Result<Vec<T>, EngineError>> {
+    use_query::<T>(Query::new(&T::select_all_sql()).dep(Dep::Table(T::TABLE)))
+}
