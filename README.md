@@ -83,10 +83,10 @@ flush on reconnect.
 
 ## Notes
 
-- **Licensing** — the vendored PGlite bundle (`crates/client/assets/pglite/`,
-  from `@electric-sql/pglite`) is Apache-2.0; its license text is vendored
-  alongside it per §4a. The WASM-compiled PostgreSQL inside it carries the
-  permissive PostgreSQL Licence.
+- **License** — this project is Apache-2.0 (see `LICENSE`). The vendored
+  PGlite bundle (`crates/client/assets/pglite/`, from `@electric-sql/pglite`)
+  keeps its own Apache-2.0 license text vendored alongside it per §4a; the
+  WASM-compiled PostgreSQL inside it carries the permissive PostgreSQL Licence.
 - **Tokio does not run in the browser.** Client async work uses
   wasm-bindgen-futures / dioxus' web runtime; tokio is the server runtime.
 - PGlite's `dataDir` **must** be `idb://...` — the default constructor is an
