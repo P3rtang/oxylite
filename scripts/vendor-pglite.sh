@@ -23,5 +23,8 @@ cp "$TMP/package/dist/index.js" "$DEST/"
 cp "$TMP"/package/dist/chunk-*.js "$DEST/"
 cp "$TMP/package/dist/pglite.wasm" "$TMP/package/dist/pglite.data" "$TMP/package/dist/initdb.wasm" "$DEST/"
 
+# Apache-2.0 requires the license text to accompany redistribution (§4a).
+cp "$TMP/package/LICENSE" "$DEST/LICENSE"
+
 green "vendored into $DEST:"
 ls -lh "$DEST"
