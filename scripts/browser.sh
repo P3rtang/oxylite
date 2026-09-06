@@ -9,10 +9,8 @@ source "$(dirname "$0")/common.sh"
 
 ./scripts/serve-server.sh
 
-if ! curl -s -o /dev/null -m 2 "http://localhost:$PORT_SERVER/wasm/client.js"; then
-    blue "building client dist…"
-    DX="${DX:-$HOME/.cargo/bin/dx}" "$ROOT/scripts/build-client.sh"
-fi
+blue "building client dist (always — incremental dx build is cheap)…"
+DX="${DX:-$HOME/.cargo/bin/dx}" "$ROOT/scripts/build-client.sh"
 
 green ""
 green "open http://localhost:$PORT_SERVER in your browser"
