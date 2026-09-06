@@ -10,6 +10,13 @@ use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 /// PGlite persists its data dir in IndexedDB via its IdbFs
 /// (`dataDir: "idb://offline_notes"`), so writes survive page reloads and
 /// keep the app functional while the server is unreachable.
+/// The bootstrap snippet, included at compile time and eval'd as one
+/// expression: `(boot)([migrations])`. Kept in a real .js file for
+/// syntax highlighting and lintability; it only touches JS globals
+/// (`__pgliteReady` promise cache), so there is no boundary to keep in
+/// sync — the migrations argument arrives as a JSON array.
+static PGLITE_BOOT_JS: &str = include_str!("../assets/pglite-boot.js");
+
 #[derive(Clone)]
 pub struct Pglite {
     instance: JsValue,
@@ -56,6 +63,10 @@ impl Pglite {
     /// PGlite 0.5.x has no built-in migration runner, so the snippet applies
     /// the shared migrations itself: applied names are tracked in the
     /// client's own `meta` table, mirroring sqlx's `_sqlx_migrations`.
+    ///
+    /// The bootstrap JS lives in `assets/pglite-boot.js` (embedded here at
+    /// compile time) — roughly forty lines of class construction and
+    /// promise caching is JS-shaped, not Rust-shaped.
     pub async fn init(migrations: &[(&'static str, &'static str)]) -> Result<Pglite, JsValue> {
         if let Some(existing) = INSTANCE.with(|i| i.borrow().clone()) {
             return Ok(existing);
@@ -63,7 +74,8 @@ impl Pglite {
 
         // The server serves the vendored bundle at /pglite/ with proper MIME
         // types. A dynamic import inside eval() can only resolve absolute
-        // URLs, so build the full URL from the document location.
+        // URLs, so the snippet builds the full URL from the document
+        // location.
         let migs: Vec<String> = migrations
             .iter()
             .map(|(name, up)| {
@@ -74,53 +86,13 @@ impl Pglite {
                 )
             })
             .collect();
-        let migs = migs.join(",");
-        let code = format!(
-            r#"(async () => {{
-                if (!globalThis.__pgliteReady) {{
-                    globalThis.__pgliteReady = (async () => {{
-                        const base = new URL("/pglite/index.js", location.href);
-                        const m = await import(base);
-                        const db = await new m.PGlite({{
-                            // Default is an in-memory FS; idb:// selects the
-                            // IndexedDB-backed IdbFs so data survives reloads
-                            // without the server.
-                            dataDir: "idb://offline_notes",
-                        }});
-                        // Bootstrap the migration tracker before anything
-                        // else, then apply pending migrations apply-once like
-                        // sqlx does server-side (tracked in the client's meta
-                        // table). Idempotent DDL keeps a half-applied set
-                        // healable.
-                        await db.exec(
-                            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-                        );
-                        for (const m of [{migs}]) {{
-                            const key = "migration:" + m.name;
-                            const seen = await db.query(
-                                "SELECT 1 FROM meta WHERE key = $1", [key]);
-                            if (seen.rows.length === 0) {{
-                                await db.exec(m.up);
-                                await db.query(
-                                    "INSERT INTO meta (key, value) VALUES ($1, '1')",
-                                    [key],
-                                );
-                            }}
-                        }}
-                        // The resolved instance is stored Rust-side (the
-                        // thread_local singleton); this promise only exists
-                        // to dedupe concurrent in-flight constructions.
-                        return db;
-                    }})();
-                    // Drop a failed init so the next call retries cleanly.
-                    globalThis.__pgliteReady.catch(() => {{
-                        globalThis.__pgliteReady = null;
-                    }});
-                }}
-                return globalThis.__pgliteReady;
-            }})()"#
-        );
+        let code = format!("({})([{}])", PGLITE_BOOT_JS, migs.join(","));
 
+        // Ok(value) = the auto-awaited construction promise resolving to the
+        // PGlite instance; Err(value) = its rejection reason. Only a
+        // successful construction is stored, so a failed init leaves the
+        // singleton empty and the next call retries (mirroring the JS-side
+        // `catch` that clears `__pgliteReady`).
         // Ok(value) = the auto-awaited construction promise resolving to the
         // PGlite instance; Err(value) = its rejection reason. Only a
         // successful construction is stored, so a failed init leaves the
