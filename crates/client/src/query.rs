@@ -90,22 +90,31 @@ pub(crate) struct Sub {
 }
 
 /// RAII subscription guard: the "unsub callback" is its Drop impl, so a
-/// component literally cannot leak a registration — when the hook state is
-/// dropped (component unmounted), the engine forgets the query. The id
-/// stays engine-internal; callers never need it.
+/// component literally cannot leak a registration — when the LAST handle
+/// drops (component unmounted, hook state released), the engine forgets
+/// the query. Cloning shares the same subscription; the id stays
+/// engine-internal (callers never need it).
+#[derive(Clone)]
 pub struct Subscription {
+    /// Only purpose is Drop timing: releasing the last Rc unsubscribes.
+    _inner: Rc<SubGuardInner>,
+}
+
+struct SubGuardInner {
     id: SubId,
+}
+
+impl Drop for SubGuardInner {
+    fn drop(&mut self) {
+        engine().unsubscribe(self.id);
+    }
 }
 
 impl Subscription {
     pub(crate) fn new(id: SubId) -> Self {
-        Self { id }
-    }
-}
-
-impl Drop for Subscription {
-    fn drop(&mut self) {
-        engine().unsubscribe(self.id);
+        Self {
+            _inner: Rc::new(SubGuardInner { id }),
+        }
     }
 }
 
@@ -123,7 +132,9 @@ pub fn use_query<T: FromRow + 'static>(query: Query) -> Signal<Vec<T>> {
 
     // Register once per component lifetime; the returned guard
     // unsubscribes when this component's hook state is dropped.
-    let _subscription = use_hook(|| Rc::new(engine().listen(query, rev)));
+    // Registered for this component's lifetime; the guard's Drop (last
+    // handle) unsubscribes when the hook state is released.
+    let _subscription = use_hook(|| engine().listen(query, rev));
 
     // Initial load + re-run on every invalidation of our deps. Reading
     // `rev` inside the effect subscribes us to those bumps.

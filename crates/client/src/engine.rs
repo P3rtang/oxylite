@@ -73,10 +73,11 @@ pub fn engine() -> Rc<Engine> {
 }
 
 impl Engine {
-    /// Register a live query; returns an RAII guard whose Drop unsubscribes.
+    /// Register a live query; returns an RAII guard whose Drop unsubscribes
+    /// (shared-ownership, so any clone of the guard keeps it alive).
     /// Re-registering the same query id refreshes its deps instead of
     /// duplicating.
-    pub fn listen(&self, q: Query, rev: Signal<u64>) -> Rc<crate::query::Subscription> {
+    pub fn listen(&self, q: Query, rev: Signal<u64>) -> crate::query::Subscription {
         let mut subs = self.subs.borrow_mut();
         if let Some(existing) = subs.iter_mut().find(|s| s.id == q.id) {
             existing.deps = q.deps;
@@ -88,7 +89,7 @@ impl Engine {
                 rev,
             });
         }
-        Rc::new(crate::query::Subscription::new(q.id))
+        crate::query::Subscription::new(q.id)
     }
 
     /// Remove a subscription (component unmounted).
