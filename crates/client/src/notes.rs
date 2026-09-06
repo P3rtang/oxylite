@@ -16,18 +16,6 @@ pub const INSERT_SQL: &str = "
     INSERT INTO notes (id, title, body, updated_at)
     VALUES ($1, $2, $3, $4)";
 
-/// LWW upsert: a remote event only wins if it is strictly newer than what
-/// we already hold (applies offline too, keeping local edits until a newer
-/// remote edit arrives).
-const UPSERT_NOTE_SQL: &str = "
-    INSERT INTO notes (id, title, body, updated_at)
-    VALUES ($1, $2, $3, $4)
-    ON CONFLICT (id) DO UPDATE
-      SET title = EXCLUDED.title,
-          body = EXCLUDED.body,
-          updated_at = EXCLUDED.updated_at
-    WHERE EXCLUDED.updated_at > notes.updated_at";
-
 /// The one live query the app needs today: all notes, re-run whenever the
 /// notes table changes (any change) or a row's own dep fires.
 pub fn list_query() -> Query {
@@ -73,20 +61,79 @@ impl FromRow for Note {
     }
 }
 
-/// Remote events for the notes table become LWW upserts locally.
 impl ApplyOp for Table {
-    async fn apply_op(self, db: &Pglite, op: &Op) -> Result<(), JsValue> {
+    /// Batched apply for Events payloads and Snapshots alike: parse, dedup
+    /// to the last row per id (log order wins — that's the LWW tiebreak),
+    /// then one multi-row upsert per chunk. A fresh IndexedDB used to apply
+    /// the whole history one awaited statement at a time.
+    async fn apply_rows(
+        self,
+        db: &Pglite,
+        rows: &[serde_json::Value],
+    ) -> Result<Vec<Uuid>, JsValue> {
         match self {
             Table::Notes => {
-                let note: Note = serde_json::from_value(op.data.clone())
-                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                db.query(
-                    UPSERT_NOTE_SQL,
-                    &[note.id.to_string(), note.title, note.body, note.updated_at],
-                )
-                .await
-                .map(|_| ())
+                let mut order: Vec<Uuid> = Vec::with_capacity(rows.len());
+                let mut by_id: std::collections::HashMap<Uuid, Note> =
+                    std::collections::HashMap::with_capacity(rows.len());
+                for v in rows {
+                    let note: Note = serde_json::from_value(v.clone())
+                        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                    if !by_id.contains_key(&note.id) {
+                        order.push(note.id);
+                    }
+                    // Same id twice in one batch: the later log entry wins.
+                    by_id.insert(note.id, note);
+                }
+                let notes: Vec<Note> = order
+                    .into_iter()
+                    .map(|id| by_id.remove(&id).unwrap())
+                    .collect();
+                let ids: Vec<Uuid> = notes.iter().map(|n| n.id).collect();
+                for chunk in notes.chunks(SNAPSHOT_CHUNK) {
+                    upsert_notes(db, chunk).await?;
+                }
+                Ok(ids)
             }
         }
     }
+}
+
+/// Rows per bulk INSERT statement; 500 * 4 params stays well under PGlite's
+/// host-parameter limit.
+const SNAPSHOT_CHUNK: usize = 500;
+
+async fn upsert_notes(db: &Pglite, notes: &[Note]) -> Result<(), JsValue> {
+    if notes.is_empty() {
+        return Ok(());
+    }
+
+    let mut sql = String::from("INSERT INTO notes (id, title, body, updated_at) VALUES ");
+    let mut params: Vec<String> = Vec::with_capacity(notes.len() * 4);
+    for (i, note) in notes.iter().enumerate() {
+        let base = i * 4;
+        if i > 0 {
+            sql.push_str(", ");
+        }
+        sql.push_str(&format!(
+            "(${}, ${}, ${}, ${})",
+            base + 1,
+            base + 2,
+            base + 3,
+            base + 4
+        ));
+        params.push(note.id.to_string());
+        params.push(note.title.clone());
+        params.push(note.body.clone());
+        params.push(note.updated_at.clone());
+    }
+    sql.push_str(
+        " ON CONFLICT (id) DO UPDATE
+         SET title = EXCLUDED.title,
+             body = EXCLUDED.body,
+             updated_at = EXCLUDED.updated_at
+       WHERE EXCLUDED.updated_at > notes.updated_at",
+    );
+
+    db.query(&sql, &params).await.map(|_| ())
 }

@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { expect, test, type Page } from "@playwright/test";
 
 const NOTE_A = `e2e note alpha ${Date.now()}`;
@@ -53,9 +54,13 @@ test("writes while offline are queued and flushed on reconnect", async ({ page }
   // and queue writes (Chrome keeps established sockets open in offline mode,
   // so this simulates a dead connection instead).
   await page.routeWebSocket("**/sync", (ws) => ws.close());
-  // Reload so the app establishes a fresh (closed) connection.
+  await page.routeWebSocket("**/sync", (ws) => ws.close());
+  // Reload so the app establishes a fresh (closed) connection. Scoped to
+  // the status <p> — note titles may contain "offline" too (strict mode).
   await page.reload();
-  await expect(page.getByText(/offline/)).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator("p").filter({ hasText: /offline/ })).toBeVisible({
+    timeout: 30_000,
+  });
 
   const noteB = `${NOTE_B}-queued`;
   await page.getByPlaceholder("Note title…").fill(noteB);
@@ -72,3 +77,30 @@ test("writes while offline are queued and flushed on reconnect", async ({ page }
   await waitForNote(pageB, noteB);
   await ctxB.close();
 });
+
+test("cold client bulk-loads a snapshot instead of replaying row by row", async ({ browser }) => {
+  // Seed 120 notes straight into Postgres (notes + sync_log, the same shape
+  // push() writes). With more than SNAPSHOT_AFTER_OPS=50 log entries, a
+  // fresh client must be served the bulk snapshot, not 120 upsert replays.
+  const stamp = `snapseed ${Date.now()}`;
+  const sql =
+    `INSERT INTO notes (id, title, body, updated_at)` +
+    ` SELECT gen_random_uuid(), '${stamp} ' || g, '',` +
+    ` to_char(now() - (g || ' seconds')::interval, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')` +
+    ` FROM generate_series(1, 120) g;` +
+    ` INSERT INTO sync_log (table_name, row_id, payload)` +
+    ` SELECT 'notes', id, jsonb_build_object('id', id, 'title', title, 'body', body, 'updated_at', updated_at)` +
+    ` FROM notes WHERE title LIKE '${stamp}%';`;
+  execSync(`podman compose exec -T postgres psql -U sync -d offline_notes -c "${sql}"`, {
+    cwd: "..", // playwright runs from e2e/; compose file lives at the repo root
+  });
+
+  // A completely fresh context = empty IndexedDB = cold bootstrap.
+  const ctx = await browser.newContext();
+  const cold = await ctx.newPage();
+  await cold.goto("/");
+  const seeded = cold.getByRole("listitem").filter({ hasText: stamp });
+  await expect(seeded).toHaveCount(120, { timeout: 30_000 });
+  await ctx.close();
+});
+

@@ -66,6 +66,9 @@ async fn handle_socket(mut socket: WebSocket, db: sqlx::PgPool) {
     // server cursor so we only push changes that happen *during* this
     // connection. Older events arrive via explicit Pull.
     let mut stream_cursor = sync::current_cursor(&db).await;
+    // One snapshot per connection, max: a follow-up Pull replays events
+    // instead, otherwise a stale snapshot and the backlog would ping-pong.
+    let mut snapshotted = false;
 
     let (out_tx, mut out_rx) = mpsc::channel::<ServerMsg>(64);
 
@@ -103,9 +106,26 @@ async fn handle_socket(mut socket: WebSocket, db: sqlx::PgPool) {
                                 Err(e) => { eprintln!("push error: {e}"); continue; }
                             },
                             Ok(ClientMsg::Pull { since }) => {
-                                match sync::pull_since(&db, since).await {
-                                    Ok((events, cursor)) => ServerMsg::Events { events, cursor },
-                                    Err(e) => { eprintln!("pull error: {e}"); continue; }
+                                // Far behind? Replay would be one upsert per
+                                // logged op — hand over a snapshot instead
+                                // (once per connection; a follow-up Pull
+                                // replays events, so snapshot and backlog
+                                // can't ping-pong).
+                                let head = sync::current_cursor(&db).await;
+                                if head - since > sync::SNAPSHOT_AFTER_OPS && !snapshotted {
+                                    snapshotted = true;
+                                    match sync::load_or_build_snapshot(&db).await {
+                                        Ok((seq, tables)) => ServerMsg::Snapshot { seq, tables },
+                                        Err(e) => {
+                                            eprintln!("snapshot error: {e}");
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    match sync::pull_since(&db, since).await {
+                                        Ok((events, cursor)) => ServerMsg::Events { events, cursor },
+                                        Err(e) => { eprintln!("pull error: {e}"); continue; }
+                                    }
                                 }
                             }
                             Err(e) => { eprintln!("bad message: {e}"); continue; }

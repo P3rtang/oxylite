@@ -21,12 +21,19 @@ use uuid::Uuid;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::WebSocket;
 
-/// How an applied event is written into the local DB, implemented per
-/// `Table` variant app-side (`notes.rs`), so the engine stays row-generic —
-/// it dispatches on the enum and never names a row type.
+/// How applied data is written into the local DB, implemented per `Table`
+/// variant app-side (`notes.rs`), so the engine stays row-generic — it
+/// dispatches on the enum and never names a row type.
 pub trait ApplyOp {
-    /// LWW-upsert the op's payload into the local DB.
-    async fn apply_op(self, db: &Pglite, op: &Op) -> Result<(), JsValue>;
+    /// Apply a batch of payload rows (from an Events message or a table
+    /// Snapshot) with bulk LWW upserts — one exec per chunk, never one per
+    /// row. Returns the applied row ids so the engine can bump their deps
+    /// once.
+    async fn apply_rows(
+        self,
+        db: &Pglite,
+        rows: &[serde_json::Value],
+    ) -> Result<Vec<Uuid>, JsValue>;
 }
 
 /// Why a query call failed, surfaced to call sites via `Signal<Result<..>>`
@@ -302,16 +309,52 @@ impl Engine {
                 );
                 self.cursor.set(c);
                 save_cursor(db, c).await;
+                // Every event already IS the invalidation notice — its
+                // (table, row_id) rides along with the payload, so phase 1
+                // needs no extra protocol messages (phase 2 can send a
+                // payload-less Invalidate instead).
+                let mut unique: Vec<Table> = Vec::new();
                 for op in &events {
-                    if let Err(e) = op.table.apply_op(db, op).await {
-                        log("sync", &format!("apply failed: {}", error_text(&e)));
+                    if !unique.contains(&op.table) {
+                        unique.push(op.table);
                     }
-                    // Every event already IS the invalidation notice — its
-                    // (table, row_id) rides along with the payload, so
-                    // phase 1 needs no extra protocol messages (phase 2 can
-                    // send a payload-less Invalidate instead).
-                    self.bump(&[(op.table, op.id)]);
                 }
+                let mut touched = Vec::with_capacity(events.len());
+                for table in unique {
+                    let rows: Vec<serde_json::Value> = events
+                        .iter()
+                        .filter(|o| o.table == table)
+                        .map(|o| o.data.clone())
+                        .collect();
+                    match table.apply_rows(db, &rows).await {
+                        Ok(ids) => touched.extend(ids.into_iter().map(|id| (table, id))),
+                        Err(e) => log("sync", &format!("apply failed: {}", error_text(&e))),
+                    }
+                }
+                // One bump per batch, not per op: replaying a backlog must
+                // re-run each query once, not once per row (the UI would
+                // visibly re-render row by row).
+                self.bump(&touched);
+            }
+            ServerMsg::Snapshot { seq, tables } => {
+                let rows_count: usize = tables.iter().map(|t| t.rows.len()).sum();
+                log("sync", &format!("snapshot at {seq}: {rows_count} rows"));
+                let mut touched = Vec::with_capacity(rows_count);
+                for table_data in &tables {
+                    match table_data.table.apply_rows(db, &table_data.rows).await {
+                        Ok(ids) => touched.extend(ids.into_iter().map(|id| (table_data.table, id))),
+                        Err(e) => log(
+                            "sync",
+                            &format!("snapshot apply failed: {}", error_text(&e)),
+                        ),
+                    }
+                }
+                self.cursor.set(seq);
+                save_cursor(db, seq).await;
+                self.bump(&touched);
+                // The snapshot may already be behind the live log head —
+                // pull the remainder right away (same re-pull as Ack).
+                self.send(&ClientMsg::Pull { since: seq });
             }
         }
     }

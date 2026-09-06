@@ -39,6 +39,18 @@ pub enum ServerMsg {
     Ack { cursor: i64 },
     /// New events the client should apply.
     Events { events: Vec<Op>, cursor: i64 },
+    /// Full table state at `seq`, replacing per-op replay for clients that
+    /// are too far behind for replay to be cheap (fresh IndexedDB, or a
+    /// long offline stretch). Applied with bulk upserts; rows use the same
+    /// payload shape as `Op.data`.
+    Snapshot { seq: i64, tables: Vec<TableData> },
+}
+
+/// One table's snapshot: every live row, payload-shaped.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableData {
+    pub table: Table,
+    pub rows: Vec<serde_json::Value>,
 }
 
 /// Tables that participate in sync. Exhaustive on purpose: the compiler
@@ -79,4 +91,8 @@ pub static MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0002_sync_log.sql"),
     ),
     ("0003_meta", include_str!("../migrations/0003_meta.sql")),
+    (
+        "0004_snapshots",
+        include_str!("../migrations/0004_snapshots.sql"),
+    ),
 ];

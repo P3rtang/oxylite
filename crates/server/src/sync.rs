@@ -1,5 +1,17 @@
-use shared::{Op, Table};
+use shared::{Op, Table, TableData};
 use sqlx::postgres::PgPool;
+
+/// Replay is fine for small backlogs, but a client that is more than this
+/// many events behind gets a snapshot instead (fresh IndexedDB, or a long
+/// offline stretch): one bulk load instead of N row-by-row upserts.
+pub const SNAPSHOT_AFTER_OPS: i64 = 50;
+
+/// A stored snapshot may be served while younger than this — it is allowed
+/// to be stale, but not arbitrarily so.
+const SNAPSHOT_MAX_AGE_SEC: i64 = 3600;
+
+/// …or while the sync log has moved at most this far past its seq.
+const SNAPSHOT_MAX_LAG: i64 = 5_000;
 
 /// Upsert each note and append it to the sync log (server side).
 pub async fn push(db: &PgPool, ops: &[Op]) -> Result<i64, String> {
@@ -94,4 +106,83 @@ pub async fn current_cursor(db: &PgPool) -> i64 {
         .fetch_one(db)
         .await
         .unwrap_or(0)
+}
+
+/// Full state for a far-behind client. Serves the stored snapshot when it
+/// is fresh enough (young enough, close enough to the log head), else
+/// rebuilds it first.
+pub async fn load_or_build_snapshot(db: &PgPool) -> Result<(i64, Vec<TableData>), String> {
+    let head = current_cursor(db).await;
+
+    let stored: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT seq, COALESCE(EXTRACT(EPOCH FROM (now() - created_at)), 0)::bigint
+         FROM snapshots ORDER BY seq DESC LIMIT 1",
+    )
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let fresh = matches!(&stored, Some((seq, age_sec))
+        if head - seq <= SNAPSHOT_MAX_LAG && *age_sec < SNAPSHOT_MAX_AGE_SEC);
+
+    if !fresh {
+        rebuild_snapshots(db).await.map_err(|e| e.to_string())?;
+    }
+
+    // All tables are rebuilt together, so any row's seq is the generation.
+    let rows: Vec<(String, i64, serde_json::Value)> =
+        sqlx::query_as("SELECT table_name, seq, data FROM snapshots ORDER BY table_name")
+            .fetch_all(db)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    let seq = rows.first().map(|(_, s, _)| *s).unwrap_or(head);
+    let tables = rows
+        .into_iter()
+        .filter_map(|(name, _, data)| {
+            // Unknown names (newer client) are skipped: compat boundary.
+            let table = Table::from_name(&name)?;
+            Some(TableData {
+                table,
+                rows: match data {
+                    serde_json::Value::Array(rows) => rows,
+                    _ => Vec::new(),
+                },
+            })
+        })
+        .collect();
+
+    Ok((seq, tables))
+}
+
+/// Rebuild every table's snapshot from the live tables (the source of
+/// truth — cheaper and simpler than replaying sync_log). New `Table`
+/// variants must add an arm here.
+async fn rebuild_snapshots(db: &PgPool) -> Result<(), String> {
+    let head = current_cursor(db).await;
+
+    // Single statement: the row set and the seq it is stamped with come
+    // from one MVCC view, so a snapshot never misses an op it claims.
+    let notes: serde_json::Value = sqlx::query_scalar(
+        "SELECT COALESCE(jsonb_agg(row_to_json(n)), '[]'::jsonb)
+         FROM (SELECT * FROM notes ORDER BY id) n",
+    )
+    .fetch_one(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "INSERT INTO snapshots (table_name, seq, data)
+         VALUES ($1, $2, $3::jsonb)
+         ON CONFLICT (table_name) DO UPDATE
+           SET seq = EXCLUDED.seq, created_at = now(), data = EXCLUDED.data",
+    )
+    .bind(Table::Notes.as_str())
+    .bind(head)
+    .bind(serde_json::to_string(&notes).map_err(|e| e.to_string())?)
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
