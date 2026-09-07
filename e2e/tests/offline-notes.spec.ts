@@ -119,9 +119,10 @@ test("apply failures surface in the notice overlay", async ({ page }) => {
     { cwd: ".." }, // playwright runs from e2e/; compose file is at the repo root
   );
 
-  const toast = page.getByText("Sync failed");
+  // Distinct skip counts produce distinct toasts — several may stack.
+  // Assert on the first one: it must appear and then auto-dismiss (4s).
+  const toast = page.getByText("Sync failed").first();
   await expect(toast).toBeVisible({ timeout: 10_000 });
-  // ...and auto-dismissed (notify removes it after 4s).
-  await expect(toast).toBeHidden({ timeout: 10_000 });
+  await expect(toast).toBeHidden({ timeout: 12_000 });
 });
 

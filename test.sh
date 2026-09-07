@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# One entry point for all testing. Consistent by construction:
+#   ./test.sh             # same as --full
+#   ./test.sh --lint      # rust build + fmt --check + clippy + unit tests
+#   ./test.sh --e2e       # fresh client dist + playwright suite
+#   ./test.sh --full      # lint + e2e
+#   --fresh               # (with e2e/full) wipe the postgres volume first
+#
+# Everything runs from a clean state: --e2e kills any server on :3000 and
+# rebuilds the dist via dx (the stale-wasm class of bug lives in forgetting
+# that step). Format drift fails with a hint instead of auto-fixing —
+# fixing formatting is a dev action, not a test action.
+set -euo pipefail
+source "$(dirname "$0")/scripts/common.sh"
+
+mode=""
+fresh=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --lint) mode="${mode:+$mode }lint" ;;
+        --e2e) mode="${mode:+$mode }e2e" ;;
+        --full) mode="lint e2e" ;;
+        --fresh) fresh=true ;;
+        *)
+            red "unknown flag: $arg"
+            echo "usage: ./test.sh [--lint] [--e2e] [--full] [--fresh]"
+            exit 1
+            ;;
+    esac
+done
+
+# No flags = full.
+[ -z "$mode" ] && mode="lint e2e"
+
+lint() {
+    blue "cargo fmt --check…"
+    if ! cargo fmt --check 2>"$LOG_DIR/test-fmt.log"; then
+        red "formatting drift — fix with: cargo fmt (see $LOG_DIR/test-fmt.log)"
+        exit 1
+    fi
+
+    blue "cargo build --workspace…"
+    cargo build --workspace
+
+    blue "clippy (host)…"
+    cargo clippy --workspace --all-targets -- -D warnings
+
+    blue "clippy (wasm: sync + client)…"
+    cargo clippy -q -p sync --target wasm32-unknown-unknown -- -D warnings
+    cargo clippy -q -p client --target wasm32-unknown-unknown -- -D warnings
+
+    blue "cargo test --workspace…"
+    cargo test --workspace
+    green "lint: clean"
+}
+
+e2e() {
+    if $fresh; then
+        blue "resetting postgres volume (--fresh)…"
+        (cd "$ROOT" && podman compose down -v) >/dev/null 2>&1
+    fi
+
+    # A running server would be reused by playwright's webServer check and
+    # might be a stale binary — consistency means restarting it.
+    if pid="$(port_pid "$PORT_SERVER")" && [ -n "$pid" ]; then
+        blue "stopping stale server (pid $pid)…"
+        kill "$pid" 2>/dev/null || true
+        sleep 1
+    fi
+
+    # Rebuild the dist: dx incremental is cheap and guarantees the served
+    # wasm matches the sources (always-sync, see build-client.sh).
+    DX="${DX:-$HOME/.cargo/bin/dx}" "$ROOT/scripts/build-client.sh"
+
+    blue "playwright suite…"
+    "$ROOT/scripts/e2e.sh"
+    green "e2e: passed"
+}
+
+for m in $mode; do
+    case "$m" in
+        lint) lint ;;
+        e2e) e2e ;;
+    esac
+done
+
+green "test.sh: all requested modules passed"

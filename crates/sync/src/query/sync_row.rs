@@ -3,6 +3,7 @@
 
 use crate::engine::EngineError;
 use crate::pglite::Pglite;
+use dioxus::prelude::WritableExt;
 use shared::Table;
 use uuid::Uuid;
 
@@ -102,6 +103,11 @@ pub trait SyncRow: FromRow + Sized {
 /// Apply a batch of payload rows (Events or a Snapshot): parse, dedup to
 /// the last row per PK (log order is the LWW tiebreak), then one multi-row
 /// upsert per chunk. A fresh IndexedDB must not pay one round-trip per row.
+///
+/// Unparseable payloads are skipped individually — they have no valid
+/// content to apply, and failing the whole chunk would drop every good
+/// row around them (one poison row in a backlog used to erase a thousand
+/// events). Skips are surfaced on `LAST_ERROR`, not swallowed.
 pub async fn bulk_upsert<T>(
     db: &Pglite,
     rows: &[serde_json::Value],
@@ -112,14 +118,18 @@ where
     let mut order: Vec<Uuid> = Vec::with_capacity(rows.len());
     let mut by_pk: std::collections::HashMap<Uuid, T> =
         std::collections::HashMap::with_capacity(rows.len());
+    let mut skipped: Vec<String> = Vec::new();
     for v in rows {
-        let row: T =
-            serde_json::from_value(v.clone()).map_err(|e| EngineError::Sink(e.to_string()))?;
-        if !by_pk.contains_key(&row.pk()) {
-            order.push(row.pk());
+        match serde_json::from_value::<T>(v.clone()) {
+            Ok(row) => {
+                if !by_pk.contains_key(&row.pk()) {
+                    order.push(row.pk());
+                }
+                // Same PK twice in one batch: the later log entry wins.
+                by_pk.insert(row.pk(), row);
+            }
+            Err(e) => skipped.push(e.to_string()),
         }
-        // Same PK twice in one batch: the later log entry wins.
-        by_pk.insert(row.pk(), row);
     }
 
     // Stay well under PGlite's host-parameter limit.
@@ -130,6 +140,14 @@ where
         db.query(&T::upsert_sql(chunk.len()), &params)
             .await
             .map_err(EngineError::from)?;
+    }
+
+    if !skipped.is_empty() {
+        let first = skipped.first().map(String::as_str).unwrap_or("?");
+        *crate::engine::LAST_ERROR.write_unchecked() = Some(EngineError::Sink(format!(
+            "skipped {} unparseable payload row(s); first: {first}",
+            skipped.len()
+        )));
     }
 
     Ok(order)
