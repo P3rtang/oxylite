@@ -22,11 +22,11 @@ mod sync_row;
 // The module's public API, exported as one unit; a binary crate lints
 // unused re-exports even though this is the intended surface.
 pub use dep::Dep;
-pub use from_row::{FromRow, Row};
+pub use from_row::{FromRow, Row, RowError};
 pub use hook::{use_all, use_query};
 pub use statement::Query;
-pub use sub::Subscription;
+pub use sub::SubscriptionGuard;
 pub use sync_row::SyncRow;
 
-pub(crate) use sub::{Sub, SubId};
+pub(crate) use sub::{Subscription, SubscriptionId};
 pub use sync_row::bulk_upsert;

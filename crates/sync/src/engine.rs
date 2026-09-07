@@ -20,7 +20,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::WebSocket;
 
 use crate::pglite::{self, Pglite};
-use crate::query::{FromRow, Query, Sub, SubId, Subscription};
+use crate::query::{FromRow, Query, RowError, Subscription, SubscriptionGuard, SubscriptionId};
 use dioxus::prelude::{Global, Signal, WritableExt};
 use shared::{ClientMsg, Op, ServerMsg, Table};
 
@@ -39,9 +39,12 @@ pub enum EngineError {
     /// The local DB could not be opened or migrated (storage, wasm heap).
     #[error("db init failed: {0}")]
     DbInit(String),
-    /// The SQL failed or a row didn't map to the result type (FromRow).
-    #[error("query failed: {0}")]
-    Query(String),
+    /// The SQL itself failed (the JS bridge rejected the statement).
+    #[error("sql failed: {0}")]
+    Sql(String),
+    /// Rows came back but didn't map to the result type.
+    #[error("row mapping failed: {0}")]
+    Mapping(#[from] RowError),
     /// The app never registered a row sink for this table — a setup bug.
     /// Surfaced instead of faking an empty success: the cursor would
     /// otherwise advance past data the client silently dropped.
@@ -57,7 +60,7 @@ pub struct Engine {
     /// The app's schema migrations, applied to every fresh local DB.
     migrations: &'static [(&'static str, &'static str)],
     /// Live queries: what the connection keeps in sync.
-    subs: RefCell<Vec<Sub>>,
+    subs: RefCell<Vec<Subscription>>,
     /// The socket while a session is open.
     sock: RefCell<Option<web_sys::WebSocket>>,
     /// Server messages parsed by the onmessage callback, awaiting the
@@ -130,23 +133,28 @@ impl Engine {
     /// (shared-ownership, so any clone of the guard keeps it alive).
     /// Re-registering the same query id refreshes its deps instead of
     /// duplicating.
-    pub fn listen(&self, q: Query, rev: Signal<u64>) -> Subscription {
+    pub fn listen(&self, q: Query, rev: Signal<u64>) -> SubscriptionGuard {
         let mut subs = self.subs.borrow_mut();
-        if let Some(existing) = subs.iter_mut().find(|s| s.id == q.id) {
-            existing.deps = q.deps;
-            existing.rev = rev;
-        } else {
-            subs.push(Sub {
-                id: q.id,
-                deps: q.deps,
-                rev,
-            });
+
+        match subs.iter_mut().find(|s| s.id == q.id) {
+            Some(existing) => {
+                existing.deps = q.deps;
+                existing.rev = rev;
+            }
+            None => {
+                subs.push(Subscription {
+                    id: q.id,
+                    deps: q.deps,
+                    rev,
+                });
+            }
         }
-        Subscription::new(q.id)
+
+        SubscriptionGuard::new(q.id)
     }
 
     /// Remove a subscription (component unmounted).
-    pub fn unsubscribe(&self, id: SubId) {
+    pub fn unsubscribe(&self, id: SubscriptionId) {
         self.subs.borrow_mut().retain(|s| s.id != id);
     }
 
@@ -157,15 +165,17 @@ impl Engine {
         let db = Pglite::init(self.migrations)
             .await
             .map_err(|e| EngineError::DbInit(error_text(&e)))?;
+
         let result = db
             .query(&q.sql, &q.params)
             .await
-            .map_err(|e| EngineError::Query(error_text(&e)))?;
+            .map_err(|e| EngineError::Sql(error_text(&e)))?;
+
         pglite::rows_of(&result)
             .iter()
             .map(|row| T::from_row(row))
             .collect::<Result<Vec<_>, _>>()
-            .map_err(EngineError::Query)
+            .map_err(EngineError::from)
     }
 
     /// Run a local write, then invalidate queries depending on `touched` —

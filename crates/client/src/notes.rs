@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use shared::{Op, Table};
 use sync::engine::RowSink;
 use sync::pglite::{Pglite, str_field};
-use sync::query::{FromRow, Row, SyncRow, bulk_upsert};
+use sync::query::{FromRow, Row, RowError, SyncRow, bulk_upsert};
 use uuid::Uuid;
 
 /// The client's note row. Defined app-side (not in `shared`) because the
@@ -56,15 +56,16 @@ pub fn op_for_note(note: &Note) -> Op {
 
 /// Rows come back as JS objects; Note knows how to build itself.
 impl FromRow for Note {
-    fn from_row(row: &Row) -> Result<Self, String> {
+    fn from_row(row: &Row) -> Result<Self, RowError> {
         Ok(Note {
             id: str_field(row, "id")
-                .ok_or("missing id")?
+                .ok_or(RowError::MissingColumn("id"))?
                 .parse()
-                .map_err(|_| "bad uuid".to_string())?,
-            title: str_field(row, "title").ok_or("missing title")?,
-            body: str_field(row, "body").ok_or("missing body")?,
-            updated_at: str_field(row, "updated_at").ok_or("missing updated_at")?,
+                .map_err(|_| RowError::BadUuid("id"))?,
+            title: str_field(row, "title").ok_or(RowError::MissingColumn("title"))?,
+            body: str_field(row, "body").ok_or(RowError::MissingColumn("body"))?,
+            updated_at: str_field(row, "updated_at")
+                .ok_or(RowError::MissingColumn("updated_at"))?,
         })
     }
 }
