@@ -69,10 +69,10 @@ e2e() {
         sleep 1
     fi
 
-    # Rebuild the dist: dx incremental is cheap and guarantees the served
-    # wasm matches the sources (always-sync, see build-client.sh).
-    DX="${DX:-$HOME/.cargo/bin/dx}" "$ROOT/scripts/build-client.sh"
-
+    # The dist rebuild lives in scripts/e2e.sh (single owner). It is not
+    # for dx staleness — the rsync-always fix solved that — but for the
+    # human variant: sources edited, dist forgotten (bit us once; the
+    # incremental no-op costs ~5s).
     blue "playwright suite…"
     "$ROOT/scripts/e2e.sh"
     green "e2e: passed"
