@@ -20,7 +20,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::WebSocket;
 
 use crate::pglite::{self, Pglite};
-use crate::query::{Query, Sub, SubId};
+use crate::query::{FromRow, Query, Sub, SubId, Subscription};
 use dioxus::prelude::{Global, Signal, WritableExt};
 use shared::{ClientMsg, Op, ServerMsg, Table};
 
@@ -120,13 +120,9 @@ impl Engine {
         table: Table,
         rows: &[serde_json::Value],
     ) -> Result<Vec<Uuid>, EngineError> {
-        // Clone the Rc out so no borrow is held across the await.
         let sink = self.sinks.borrow().get(&table).cloned();
         match sink {
             Some(f) => (f)(db, rows).await,
-            // A missing sink is a setup bug (the app forgot to register a
-            // table) — surface it, never fake an empty success: the cursor
-            // would advance past data the client silently dropped.
             None => Err(EngineError::NoSink(table)),
         }
     }
@@ -134,7 +130,7 @@ impl Engine {
     /// (shared-ownership, so any clone of the guard keeps it alive).
     /// Re-registering the same query id refreshes its deps instead of
     /// duplicating.
-    pub fn listen(&self, q: Query, rev: Signal<u64>) -> crate::query::Subscription {
+    pub fn listen(&self, q: Query, rev: Signal<u64>) -> Subscription {
         let mut subs = self.subs.borrow_mut();
         if let Some(existing) = subs.iter_mut().find(|s| s.id == q.id) {
             existing.deps = q.deps;
@@ -146,7 +142,7 @@ impl Engine {
                 rev,
             });
         }
-        crate::query::Subscription::new(q.id)
+        Subscription::new(q.id)
     }
 
     /// Remove a subscription (component unmounted).
@@ -157,10 +153,7 @@ impl Engine {
     /// One-shot local read, mapped to `T` via its FromRow impl. Works
     /// regardless of connection state — reads never wait on the network.
     /// Failures are typed so call sites can render them (see use_query).
-    pub async fn query<T: crate::query::FromRow>(
-        &self,
-        q: &crate::query::Query,
-    ) -> Result<Vec<T>, EngineError> {
+    pub async fn query<T: FromRow>(&self, q: &Query) -> Result<Vec<T>, EngineError> {
         let db = Pglite::init(self.migrations)
             .await
             .map_err(|e| EngineError::DbInit(error_text(&e)))?;
