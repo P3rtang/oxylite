@@ -11,14 +11,15 @@ endif
 let s:shortmess_save = &shortmess
 set shortmess+=aoO
 badd +415 crates/client/src/engine.rs
-badd +65 crates/client/src/query.rs
+badd +237 crates/client/src/query.rs
 badd +295 ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/dioxus-core-0.7.10/src/global_context.rs
 badd +9 scripts/dev.sh
 badd +75 ~/projects/pglite-test/crates/client/src/pglite.rs
-badd +32 crates/client/src/notes.rs
+badd +60 crates/client/src/notes.rs
+badd +0 crates/client/src/query/dep.rs
 argglobal
 %argdel
-edit crates/client/src/notes.rs
+edit crates/client/src/query/dep.rs
 argglobal
 balt crates/client/src/query.rs
 setlocal foldmethod=expr
@@ -29,14 +30,12 @@ setlocal foldlevel=99
 setlocal foldminlines=1
 setlocal foldnestmax=20
 setlocal foldenable
-60
-sil! normal! zo
-let s:l = 60 - ((26 * winheight(0) + 31) / 62)
+let s:l = 1 - ((0 * winheight(0) + 31) / 62)
 if s:l < 1 | let s:l = 1 | endif
 keepjumps exe s:l
 normal! zt
-keepjumps 60
-normal! 011|
+keepjumps 1
+normal! 0
 tabnext 1
 if exists('s:wipebuf') && len(win_findbuf(s:wipebuf)) == 0 && getbufvar(s:wipebuf, '&buftype') isnot# 'terminal'
   silent exe 'bwipe ' . s:wipebuf

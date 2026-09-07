@@ -297,11 +297,8 @@ dependencies = [
  "serde",
  "serde_json",
  "shared",
- "thiserror 2.0.20",
+ "sync",
  "uuid",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]
@@ -3300,6 +3297,22 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "sync"
+version = "0.1.0"
+dependencies = [
+ "dioxus",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "shared",
+ "thiserror 2.0.20",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

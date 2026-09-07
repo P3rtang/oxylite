@@ -1,21 +1,19 @@
-//! Offline-first notes UI. All data flows through the sync engine
-//! (engine.rs): this file only wires components — one live query for the
+//! Offline-first notes UI. All data flows through the sync engine (the
+//! `sync` crate): this file only wires components — one live query for the
 //! list, one submit path, no sockets, no global state beyond the engine.
 
-mod engine;
 mod notes;
-mod pglite;
-mod query;
 
 use dioxus::prelude::*;
-use engine::engine;
-use notes::{new_note, op_for_note};
-use query::{SyncRow, use_all};
-use shared::Note;
+use notes::{Note, new_note, notes_applier, op_for_note};
+use shared::Table;
+use sync::engine::{self, engine};
+use sync::query::{SyncRow, use_all};
 
 fn main() {
     console_error_panic_hook::set_once();
-    engine::init();
+    engine::init(shared::MIGRATIONS);
+    engine().register_applier(Table::Notes, notes_applier());
     dioxus::launch(App);
 }
 

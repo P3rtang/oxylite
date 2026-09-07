@@ -57,7 +57,7 @@ pub struct TableData {
 /// forces every match site (apply, invalidate, subscribe) to handle new
 /// tables, and methods can live here. The wire name stays stable via
 /// `as_str` (that's what sync_log's `table_name` column stores).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Table {
     Notes,

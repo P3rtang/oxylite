@@ -35,11 +35,12 @@ async fn main() {
         .route("/sync", get(sync_ws))
         // The vendored PGlite bundle (ES module + wasm + data), served with
         // proper MIME types so the client can dynamically `import()` it.
+        // Lives in the sync crate — it owns the whole PGlite chain.
         .nest_service(
             "/pglite",
             tower_http::services::ServeDir::new(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../client/assets/pglite"
+                "/../sync/assets/pglite"
             ))
             .append_index_html_on_directories(false),
         )

@@ -11,33 +11,20 @@
 //! duration of a synchronous call — never across an `await` — so a callback
 //! firing mid-await can never hit a borrowed RefCell.
 
-use crate::pglite::{self, Pglite};
-use crate::query::{Query, Sub, SubId};
-use dioxus::prelude::{Global, Signal, WritableExt};
-use shared::{ClientMsg, Op, ServerMsg, Table};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::future::Future;
 use std::rc::Rc;
 use uuid::Uuid;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::WebSocket;
 
-/// How applied data is written into the local DB, implemented per `Table`
-/// variant app-side (`notes.rs`), so the engine stays row-generic — it
-/// dispatches on the enum and never names a row type.
-pub trait ApplyOp {
-    /// Apply a batch of payload rows (from an Events message or a table
-    /// Snapshot) with bulk LWW upserts — one exec per chunk, never one per
-    /// row. Returns the applied row ids so the engine can bump their deps
-    /// once.
-    async fn apply_rows(
-        self,
-        db: &Pglite,
-        rows: &[serde_json::Value],
-    ) -> Result<Vec<Uuid>, JsValue>;
-}
+use crate::pglite::{self, Pglite};
+use crate::query::{Query, Sub, SubId};
+use dioxus::prelude::{Global, Signal, WritableExt};
+use shared::{ClientMsg, Op, ServerMsg, Table};
 
 /// Why a query call failed, surfaced to call sites via `Signal<Result<..>>`
-/// so the UI can render error states instead of silently empty lists.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EngineError {
     /// The local DB could not be opened or migrated (storage, wasm heap).
@@ -54,6 +41,8 @@ pub enum EngineError {
 pub static STATUS: Global<Signal<String>, String> = Signal::global(|| "starting…".to_string());
 
 pub struct Engine {
+    /// The app's schema migrations, applied to every fresh local DB.
+    migrations: &'static [(&'static str, &'static str)],
     /// Live queries: what the connection keeps in sync.
     subs: RefCell<Vec<Sub>>,
     /// The socket while a session is open.
@@ -66,6 +55,8 @@ pub struct Engine {
     /// Where we've streamed sync_log to; persisted in the client's meta
     /// table so it survives reloads.
     cursor: Cell<i64>,
+    /// Per-table appliers registered by the app.
+    appliers: RefCell<HashMap<Table, Applier>>,
 }
 
 thread_local! {
@@ -74,17 +65,30 @@ thread_local! {
 
 /// Create the engine singleton. Called once from `main`, before launch, so
 /// hooks and callbacks can always reach it.
-pub fn init() {
+pub fn init(migrations: &'static [(&'static str, &'static str)]) {
     ENGINE.with_borrow_mut(|slot| {
         *slot = Some(Rc::new(Engine {
+            migrations,
             subs: RefCell::new(Vec::new()),
             sock: RefCell::new(None),
             inbox: RefCell::new(Vec::new()),
             pending: RefCell::new(Vec::new()),
             cursor: Cell::new(-1),
+            appliers: RefCell::new(HashMap::new()),
         }));
     });
 }
+
+/// App-provided applier for one table: writes that table's payload rows
+/// (Events payloads or a Snapshot) into the local DB. The app owns the
+/// mapping (it names its row types); the engine just dispatches — the
+/// dynamic-dispatch boundary of this library.
+pub type Applier = Rc<
+    dyn for<'a> Fn(
+        &'a Pglite,
+        &'a [serde_json::Value],
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Vec<Uuid>, String>> + 'a>>,
+>;
 
 /// Handle to the engine singleton.
 pub fn engine() -> Rc<Engine> {
@@ -92,6 +96,30 @@ pub fn engine() -> Rc<Engine> {
 }
 
 impl Engine {
+    /// Register the app's applier for one table: what the engine calls to
+    /// write that table's payload rows into the local DB. The app owns the
+    /// mapping (it names its row types); the engine just dispatches.
+    pub fn register_applier(&self, table: Table, applier: Applier) {
+        self.appliers.borrow_mut().insert(table, applier);
+    }
+
+    /// Apply one table's batch through its registered applier.
+    async fn apply_batch(
+        &self,
+        db: &Pglite,
+        table: Table,
+        rows: &[serde_json::Value],
+    ) -> Result<Vec<Uuid>, String> {
+        // Clone the Rc out so no borrow is held across the await.
+        let applier = self.appliers.borrow().get(&table).cloned();
+        match applier {
+            Some(f) => (f)(db, rows).await,
+            None => {
+                log("sync", &format!("no applier registered for {:?}", table));
+                Ok(Vec::new())
+            }
+        }
+    }
     /// Register a live query; returns an RAII guard whose Drop unsubscribes
     /// (shared-ownership, so any clone of the guard keeps it alive).
     /// Re-registering the same query id refreshes its deps instead of
@@ -123,7 +151,7 @@ impl Engine {
         &self,
         q: &crate::query::Query,
     ) -> Result<Vec<T>, EngineError> {
-        let db = Pglite::init(shared::MIGRATIONS)
+        let db = Pglite::init(self.migrations)
             .await
             .map_err(|e| EngineError::DbInit(error_text(&e)))?;
         let result = db
@@ -141,7 +169,7 @@ impl Engine {
     /// the same path remote events take, so offline writes light up the UI
     /// identically.
     pub async fn exec(&self, sql: &str, params: &[String], touched: &[(Table, Uuid)]) {
-        let db = match Pglite::init(shared::MIGRATIONS).await {
+        let db = match Pglite::init(self.migrations).await {
             Ok(p) => p,
             Err(e) => {
                 log("exec", &format!("db not ready: {}", error_text(&e)));
@@ -221,7 +249,7 @@ impl Engine {
     /// The single long-lived task: connect, pull since cursor, flush
     /// pending, drain inbox, and reconnect with backoff on close.
     pub async fn run(&self) {
-        let db = match Pglite::init(shared::MIGRATIONS).await {
+        let db = match Pglite::init(self.migrations).await {
             Ok(p) => p,
             Err(e) => {
                 self.set_status(&format!("pglite failed: {}", error_text(&e)));
@@ -326,9 +354,9 @@ impl Engine {
                         .filter(|o| o.table == table)
                         .map(|o| o.data.clone())
                         .collect();
-                    match table.apply_rows(db, &rows).await {
+                    match self.apply_batch(db, table, &rows).await {
                         Ok(ids) => touched.extend(ids.into_iter().map(|id| (table, id))),
-                        Err(e) => log("sync", &format!("apply failed: {}", error_text(&e))),
+                        Err(e) => log("sync", &format!("apply failed: {e}")),
                     }
                 }
                 // One bump per batch, not per op: replaying a backlog must
@@ -341,12 +369,14 @@ impl Engine {
                 log("sync", &format!("snapshot at {seq}: {rows_count} rows"));
                 let mut touched = Vec::with_capacity(rows_count);
                 for table_data in &tables {
-                    match table_data.table.apply_rows(db, &table_data.rows).await {
-                        Ok(ids) => touched.extend(ids.into_iter().map(|id| (table_data.table, id))),
-                        Err(e) => log(
-                            "sync",
-                            &format!("snapshot apply failed: {}", error_text(&e)),
-                        ),
+                    match self
+                        .apply_batch(db, table_data.table, &table_data.rows)
+                        .await
+                    {
+                        Ok(ids) => {
+                            touched.extend(ids.into_iter().map(|id| (table_data.table, id)));
+                        }
+                        Err(e) => log("sync", &format!("snapshot apply failed: {e}")),
                     }
                 }
                 self.cursor.set(seq);

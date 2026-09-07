@@ -101,10 +101,7 @@ pub trait SyncRow: FromRow + Sized {
 /// Apply a batch of payload rows (Events or a Snapshot): parse, dedup to
 /// the last row per PK (log order is the LWW tiebreak), then one multi-row
 /// upsert per chunk. A fresh IndexedDB must not pay one round-trip per row.
-pub(crate) async fn bulk_upsert<T>(
-    db: &Pglite,
-    rows: &[serde_json::Value],
-) -> Result<Vec<Uuid>, String>
+pub async fn bulk_upsert<T>(db: &Pglite, rows: &[serde_json::Value]) -> Result<Vec<Uuid>, String>
 where
     T: SyncRow + serde::de::DeserializeOwned,
 {

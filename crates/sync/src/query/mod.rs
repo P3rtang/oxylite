@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 //! Reactive query layer: firestore-shaped reads over the local DB.
 //!
 //! Components call [`use_query`] with a [`Query`] and get a signal of typed
@@ -20,15 +21,12 @@ mod sync_row;
 
 // The module's public API, exported as one unit; a binary crate lints
 // unused re-exports even though this is the intended surface.
-#[allow(unused_imports)]
 pub use dep::Dep;
-#[allow(unused_imports)]
 pub use from_row::{FromRow, Row};
-#[allow(unused_imports)]
 pub use hook::{use_all, use_query};
 pub use statement::Query;
 pub use sub::Subscription;
 pub use sync_row::SyncRow;
 
 pub(crate) use sub::{Sub, SubId};
-pub(crate) use sync_row::bulk_upsert;
+pub use sync_row::bulk_upsert;

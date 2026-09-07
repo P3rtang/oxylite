@@ -1,14 +1,34 @@
-//! App-level note glue: row mapping, op building, and the per-table event
-//! applier. All SQL comes from the [`SyncRow`] contract (query.rs) — this
-//! file declares the mapping and the table's LWW column, nothing more.
-//! The engine layer stays generic — it never names `Note`.
+//! App-level note glue: the client's row type, its mapping, op building,
+//! and the applier the engine dispatches to. All SQL comes from the
+//! [`SyncRow`] contract — this file declares the mapping and the table's
+//! LWW column. The engine stays generic: it never names a note.
 
-use crate::engine::ApplyOp;
-use crate::pglite::{Pglite, str_field};
-use crate::query::{FromRow, Row, SyncRow, bulk_upsert};
-use shared::{Note, Op, Table};
+use std::rc::Rc;
+
+use serde::{Deserialize, Serialize};
+use shared::{Op, Table};
+use sync::engine::Applier;
+use sync::pglite::{Pglite, str_field};
+use sync::query::{FromRow, Row, SyncRow, bulk_upsert};
 use uuid::Uuid;
-use wasm_bindgen::JsValue;
+
+/// The client's note row. Defined app-side (not in `shared`) because the
+/// library's traits are implemented for local types only — the wire
+/// payload is an untyped JSON value whose shape is the contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Note {
+    pub id: Uuid,
+    pub title: String,
+    pub body: String,
+    pub updated_at: String, // ISO 8601
+}
+
+/// The engine dispatches this for `Table::Notes` payloads (Events and
+/// Snapshots). Registered in main at startup — ownership requires the
+/// mapping to live app-side, since it names `Note`.
+pub fn notes_applier() -> Applier {
+    Rc::new(|db: &Pglite, rows: &[serde_json::Value]| Box::pin(bulk_upsert::<Note>(db, rows)))
+}
 
 pub fn new_note(title: &str) -> Note {
     Note {
@@ -27,8 +47,8 @@ fn now_iso() -> String {
 
 pub fn op_for_note(note: &Note) -> Op {
     Op {
-        table: Note::TABLE,
-        id: note.pk(),
+        table: Table::Notes,
+        id: note.id,
         data: serde_json::to_value(note).unwrap(),
         updated_at: note.updated_at.clone(),
     }
@@ -67,23 +87,5 @@ impl SyncRow for Note {
 
     fn pk(&self) -> Uuid {
         self.id
-    }
-}
-
-/// Rows come back as JS objects; the mapping above covers them.
-impl ApplyOp for Table {
-    /// Batched apply for Events payloads and Snapshots alike — the generic
-    /// path handles parse, last-writer dedup and chunked upserts; this impl
-    /// only maps the enum variant to its row type.
-    async fn apply_rows(
-        self,
-        db: &Pglite,
-        rows: &[serde_json::Value],
-    ) -> Result<Vec<Uuid>, JsValue> {
-        match self {
-            Table::Notes => bulk_upsert::<Note>(db, rows)
-                .await
-                .map_err(|e| JsValue::from_str(&e)),
-        }
     }
 }
