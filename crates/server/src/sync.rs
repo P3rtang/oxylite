@@ -70,29 +70,35 @@ pub async fn push(db: &PgPool, ops: &[Op]) -> Result<i64, SyncError> {
     Ok(cursor)
 }
 
-/// Events after `since`, batched, with the cursor they reach.
+/// Events after `since`, windowed, with the seq the batch reaches.
 pub async fn pull_since(db: &PgPool, since: i64) -> Result<(Vec<Op>, i64), SyncError> {
-    let cursor: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(seq), 0)::bigint FROM sync_log")
+    let head: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(seq), 0)::bigint FROM sync_log")
         .fetch_one(db)
         .await?;
 
-    if since >= cursor {
-        return Ok((Vec::new(), cursor));
+    if since >= head {
+        return Ok((Vec::new(), head));
     }
 
-    let rows: Vec<(String, sqlx::types::Uuid, serde_json::Value)> = sqlx::query_as(
-        "SELECT table_name, row_id, payload
+    let rows: Vec<(i64, String, sqlx::types::Uuid, serde_json::Value)> = sqlx::query_as(
+        "SELECT seq, table_name, row_id, payload
          FROM sync_log WHERE seq > $1 ORDER BY seq LIMIT 1000",
     )
     .bind(since)
     .fetch_all(db)
     .await?;
 
+    // The cursor is the LAST STREAMED seq, never the head: the batch is a
+    // window into the backlog, and returning the head here let clients
+    // skip every event past the window (their cursor jumped ahead while
+    // the data stayed on the server).
+    let cursor = rows.last().map(|(seq, _, _, _)| *seq).unwrap_or(head);
+
     let events = rows
         .into_iter()
         // Unknown table names (newer client) are skipped: this server is
         // the compat boundary and can't apply what it doesn't know.
-        .filter_map(|(table, id, data)| {
+        .filter_map(|(_, table, id, data)| {
             let table = Table::from_name(&table)?;
             Some(Op {
                 table,

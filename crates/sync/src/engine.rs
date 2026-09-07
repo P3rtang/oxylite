@@ -378,6 +378,12 @@ impl Engine {
                 // re-run each query once, not once per row (the UI would
                 // visibly re-render row by row).
                 self.bump(&touched);
+                // The batch is a window into the backlog: keep pulling
+                // until the server returns an empty one. (At-least-once;
+                // LWW makes replays idempotent.)
+                if !events.is_empty() {
+                    self.send(&ClientMsg::Pull { since: c });
+                }
             }
             ServerMsg::Snapshot { seq, tables } => {
                 let rows_count: usize = tables.iter().map(|t| t.rows.len()).sum();
