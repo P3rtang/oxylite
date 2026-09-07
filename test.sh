@@ -69,10 +69,9 @@ e2e() {
         sleep 1
     fi
 
-    # The dist rebuild lives in scripts/e2e.sh (single owner). It is not
-    # for dx staleness — the rsync-always fix solved that — but for the
-    # human variant: sources edited, dist forgotten (bit us once; the
-    # incremental no-op costs ~5s).
+    # Dist freshness is owned by the serve steps, not here: the webServer
+    # command and serve-server.sh both build before starting, so a reused
+    # server always postdates its dist build.
     blue "playwright suite…"
     "$ROOT/scripts/e2e.sh"
     green "e2e: passed"

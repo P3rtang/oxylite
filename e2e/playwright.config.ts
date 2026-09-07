@@ -18,9 +18,13 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: [
     {
-      // Postgres must be up before the server connects; folded into one
-      // command since Playwright only supports http URLs for health checks.
-      command: "podman compose up -d && cargo run -p server",
+      // Build step for the e2e stack: the dist is rebuilt on every server
+      // start (the serve path owns freshness — a reused server always
+      // postdates its dist build), then Postgres must be up before the
+      // server connects; folded into one command since Playwright only
+      // supports http URLs for health checks.
+      command:
+        "DX=$HOME/.cargo/bin/dx ../scripts/build-client.sh && podman compose up -d && cargo run -p server",
       url: "http://localhost:3000/health",
       reuseExistingServer: true,
       timeout: 180_000,

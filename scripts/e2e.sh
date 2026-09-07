@@ -9,10 +9,9 @@ BUN="${BUN:-$HOME/.bun/bin/bun}"
 
 cd "$ROOT/e2e"
 
-blue "building client dist (served by the sync server)…"
-DX="${DX:-$HOME/.cargo/bin/dx}" "$ROOT/scripts/build-client.sh"
-
 blue "starting playwright (it manages postgres + server itself)…"
+# The dist build is owned by the webServer command (build step for the e2e
+# stack); a reused server always postdates its own dist build.
 # `bun run` uses the pinned local @playwright/test; `bun x playwright`
 # re-resolves and can pull a version-mismatched standalone package.
 "$BUN" run test "$@"

@@ -17,6 +17,11 @@ wait_for_url "postgres://sync:sync@localhost:5432/offline_notes" 1 >/dev/null 2>
 blue "building server…"
 cargo build -q -p server 2>"$LOG_DIR/build-server.log"
 
+# Every serve path builds the dist first: a running server always
+# postdates its dist build, so reuse is never stale.
+blue "building client dist…"
+DX="${DX:-$HOME/.cargo/bin/dx}" "$ROOT/scripts/build-client.sh"
+
 blue "starting sync server…"
 (setsid "$ROOT/target/debug/server" > "$LOG_DIR/server.log" 2>&1 &)
 
