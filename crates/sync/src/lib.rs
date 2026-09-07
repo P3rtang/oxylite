@@ -9,4 +9,4 @@ pub mod pglite;
 pub mod query;
 
 pub use engine::{Engine, EngineError, STATUS, engine, init};
-pub use pglite::Pglite;
+pub use pglite::{BridgeError, Pglite};

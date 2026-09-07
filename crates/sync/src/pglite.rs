@@ -1,6 +1,7 @@
 use core::cell::RefCell;
-use js_sys::Function;
+use js_sys::{Function, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
+use wasm_bindgen_futures::JsFuture;
 
 /// Rust bridge to the vendored PGlite (the official ESM bundle copied
 /// verbatim into `crates/client/assets/pglite/`). No JS of our own is
@@ -39,35 +40,25 @@ unsafe extern "C" {
 
 impl Pglite {
     /// Open (or reopen) the persistent offline database, applying
-    /// `migrations` (the shared set, see `shared::MIGRATIONS`) before anyone
-    /// can touch it.
+    /// `migrations` before anyone can touch it.
     ///
-    /// Singleton lifecycle, embedded-book style: once a construction
-    /// succeeds, `INSTANCE` holds an owned `Pglite` and every later call
-    /// returns a cheap clone — callers can hand `&Pglite` around without
-    /// re-initializing. `init` never returns `None`-take semantics (unlike
-    /// `Peripherals::take`): the UI calls it from many tasks, so re-joining
-    /// the live instance is the point, not a borrow-checker escape hatch.
+    /// Singleton lifecycle: once a construction succeeds, `INSTANCE` holds
+    /// an owned `Pglite` and every later call returns a cheap clone —
+    /// callers can hand `&Pglite` around without re-initializing. `init`
+    /// never returns `None`-take semantics: the UI calls it from many
+    /// tasks, so re-joining the live instance is the point.
     ///
     /// `new PGlite(...)` must happen in JS — wasm-bindgen `call` cannot
-    /// construct ES classes — so this is driven by an eval'd snippet. The
-    /// snippet keeps its in-flight promise on `globalThis.__pgliteReady` so
-    /// two Rust tasks racing `init` before either has a resolved instance
-    /// share ONE construction instead of opening two emscripten modules on
-    /// the same IndexedDB dir. (A pending promise can't be cached in Rust
-    /// without extra plumbing, so the in-flight guard lives in JS; the
-    /// resolved instance is stored Rust-side, in `INSTANCE`.)
-    /// wasm-bindgen async externs auto-await the returned promise, so
-    /// `eval_js` resolves to the instance itself.
+    /// construct ES classes — so this is driven by the eval'd boot snippet
+    /// (`assets/pglite-boot.js`). The snippet keeps its in-flight promise
+    /// on `globalThis.__pgliteReady` so two Rust tasks racing `init`
+    /// before either has a resolved instance share ONE construction
+    /// instead of opening two emscripten modules on the same IndexedDB
+    /// dir. wasm-bindgen async externs auto-await the returned promise.
     ///
-    /// PGlite 0.5.x has no built-in migration runner, so the snippet applies
-    /// the shared migrations itself: applied names are tracked in the
-    /// client's own `meta` table, mirroring sqlx's `_sqlx_migrations`.
-    ///
-    /// The bootstrap JS lives in `assets/pglite-boot.js` (embedded here at
-    /// compile time) — roughly forty lines of class construction and
-    /// promise caching is JS-shaped, not Rust-shaped.
-    pub async fn init(migrations: &[(&'static str, &'static str)]) -> Result<Pglite, JsValue> {
+    /// The boot snippet applies `migrations` itself (tracked apply-once in
+    /// the client's `meta` table, mirroring sqlx's `_sqlx_migrations`).
+    pub async fn init(migrations: &[(&'static str, &'static str)]) -> Result<Pglite, BridgeError> {
         if let Some(existing) = INSTANCE.with(|i| i.borrow().clone()) {
             return Ok(existing);
         }
@@ -104,31 +95,85 @@ impl Pglite {
                 INSTANCE.with(|i| *i.borrow_mut() = Some(p.clone()));
                 Ok(p)
             }
-            Err(e) => Err(JsValue::from_str(&error_text(&e))),
+            Err(e) => Err(BridgeError::from_rejection(&e)),
         }
     }
 
     /// Run a single statement with bound string parameters, returning the
     /// result object ({ rows: [...], fields: [...] }).
-    pub async fn query(&self, sql: &str, params: &[String]) -> Result<JsValue, JsValue> {
-        let q: Function = js_sys::Reflect::get(&self.instance, &"query".into())?.dyn_into()?;
+    pub async fn query(&self, sql: &str, params: &[String]) -> Result<JsValue, BridgeError> {
+        let q: Function = Reflect::get(&self.instance, &"query".into())
+            .map_err(|e| BridgeError::from_rejection(&e))?
+            .dyn_into()
+            .map_err(|e: JsValue| BridgeError::from_rejection(&e))?;
         let arr = params
             .iter()
             .map(|p| JsValue::from_str(p))
             .collect::<js_sys::Array>();
-        let ret = q.call2(&self.instance, &JsValue::from_str(sql), &arr.into())?;
-        let promise: js_sys::Promise = ret.dyn_into()?;
-        wasm_bindgen_futures::JsFuture::from(promise).await
+        let ret = q
+            .call2(&self.instance, &JsValue::from_str(sql), &arr.into())
+            .map_err(|e| BridgeError::from_rejection(&e))?;
+        let promise: js_sys::Promise = ret
+            .dyn_into()
+            .map_err(|e: JsValue| BridgeError::from_rejection(&e))?;
+        JsFuture::from(promise)
+            .await
+            .map_err(|e| BridgeError::from_rejection(&e))
     }
 }
 
-/// Extract a readable message from a JS error object.
-fn error_text(e: &JsValue) -> String {
-    js_sys::Reflect::get(e, &"message".into())
-        .ok()
-        .and_then(|v| v.as_string())
-        .or_else(|| js_sys::JSON::stringify(e).ok().and_then(|s| s.as_string()))
-        .unwrap_or_else(|| format!("{e:?}"))
+/// The common JS↔Rust error exchange: every rejection crossing the bridge
+/// is normalized into this shape, so Rust call sites get typed errors
+/// instead of opaque `JsValue`s (and no prose-parsing anywhere).
+///
+/// String payloads here are the wire format itself — JS rejections carry
+/// display text, and this is the boundary where it crosses.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BridgeError {
+    /// PGlite surfaced a Postgres error: the SQLSTATE code plus the
+    /// message (e.g. code 23505, unique violation).
+    #[error("postgres {code}: {message}")]
+    Postgres { code: String, message: String },
+    /// A JS `Error` (or any thrown value) without a Postgres code.
+    #[error("{message}")]
+    Js { message: String },
+}
+
+impl BridgeError {
+    /// Normalize a JS rejection: strings pass through; error objects are
+    /// reflected for `message` and a Postgres SQLSTATE (`code`, falling
+    /// back to `cause.code` — PGlite nests the PG error); anything else
+    /// is debug-printed. Never panics; unknown shapes degrade to `Js`.
+    pub(crate) fn from_rejection(e: &JsValue) -> Self {
+        if let Some(s) = e.as_string() {
+            return Self::Js { message: s };
+        }
+        let obj = match e.dyn_ref::<js_sys::Object>() {
+            Some(o) => o,
+            None => {
+                return Self::Js {
+                    message: format!("{e:?}"),
+                };
+            }
+        };
+        let message = Reflect::get(obj, &"message".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| format!("{e:?}"));
+        let code = Reflect::get(obj, &"code".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .or_else(|| {
+                Reflect::get(obj, &"cause".into())
+                    .ok()
+                    .and_then(|c| Reflect::get(&c, &"code".into()).ok())
+                    .and_then(|v| v.as_string())
+            });
+        match code {
+            Some(code) => Self::Postgres { code, message },
+            None => Self::Js { message },
+        }
+    }
 }
 
 /// Read rows out of a PGlite query result. Each row is an object keyed by

@@ -1,7 +1,7 @@
 //! The synced-row contract: FromRow + the SQL shape the engine needs, plus
 //! the generic batch sink built on it.
 
-use crate::engine::{EngineError, error_text};
+use crate::engine::EngineError;
 use crate::pglite::Pglite;
 use shared::Table;
 use uuid::Uuid;
@@ -129,7 +129,7 @@ where
         let params: Vec<String> = chunk.iter().flat_map(|r| r.params().into_iter()).collect();
         db.query(&T::upsert_sql(chunk.len()), &params)
             .await
-            .map_err(|e| EngineError::Sink(error_text(&e)))?;
+            .map_err(EngineError::from)?;
     }
 
     Ok(order)

@@ -19,7 +19,7 @@ use uuid::Uuid;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::WebSocket;
 
-use crate::pglite::{self, Pglite};
+use crate::pglite::{self, BridgeError, Pglite};
 use crate::query::{FromRow, Query, RowError, Subscription, SubscriptionGuard, SubscriptionId};
 use dioxus::prelude::{Global, Signal, WritableExt};
 use shared::{ClientMsg, Op, ServerMsg, Table};
@@ -38,10 +38,10 @@ thread_local! {
 pub enum EngineError {
     /// The local DB could not be opened or migrated (storage, wasm heap).
     #[error("db init failed: {0}")]
-    DbInit(String),
-    /// The SQL itself failed (the JS bridge rejected the statement).
+    DbInit(BridgeError),
+    /// The statement itself failed at the PGlite/JS boundary.
     #[error("sql failed: {0}")]
-    Sql(String),
+    Sql(#[from] BridgeError),
     /// Rows came back but didn't map to the result type.
     #[error("row mapping failed: {0}")]
     Mapping(#[from] RowError),
@@ -164,12 +164,12 @@ impl Engine {
     pub async fn query<T: FromRow>(&self, q: &Query) -> Result<Vec<T>, EngineError> {
         let db = Pglite::init(self.migrations)
             .await
-            .map_err(|e| EngineError::DbInit(error_text(&e)))?;
+            .map_err(EngineError::DbInit)?;
 
         let result = db
             .query(&q.sql, &q.params)
             .await
-            .map_err(|e| EngineError::Sql(error_text(&e)))?;
+            .map_err(EngineError::from)?;
 
         pglite::rows_of(&result)
             .iter()
@@ -185,13 +185,13 @@ impl Engine {
         let db = match Pglite::init(self.migrations).await {
             Ok(p) => p,
             Err(e) => {
-                log("exec", &format!("db not ready: {}", error_text(&e)));
+                log("exec", &format!("db not ready: {e}"));
                 return;
             }
         };
         match db.query(sql, params).await {
             Ok(_) => self.bump(touched),
-            Err(e) => log("exec", &format!("write failed: {}", error_text(&e))),
+            Err(e) => log("exec", &format!("write failed: {e}")),
         }
     }
 
@@ -265,7 +265,7 @@ impl Engine {
         let db = match Pglite::init(self.migrations).await {
             Ok(p) => p,
             Err(e) => {
-                self.set_status(&format!("pglite failed: {}", error_text(&e)));
+                self.set_status(&format!("pglite failed: {e}"));
                 return;
             }
         };
@@ -406,10 +406,6 @@ impl Engine {
 /// Console logging for debugging in Chrome devtools.
 pub fn log(kind: &str, msg: &str) {
     web_sys::console::log_1(&JsValue::from_str(&format!("[{kind}] {msg}")));
-}
-
-pub(crate) fn error_text(e: &JsValue) -> String {
-    e.as_string().unwrap_or_else(|| format!("{e:?}"))
 }
 
 /// Open the sync websocket; parsed messages are enqueued via
