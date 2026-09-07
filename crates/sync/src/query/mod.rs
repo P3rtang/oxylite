@@ -23,7 +23,7 @@ mod sync_row;
 // unused re-exports even though this is the intended surface.
 pub use dep::Dep;
 pub use from_row::{FromRow, Row, RowError};
-pub use hook::{use_all, use_query};
+pub use hook::{use_query, use_select_all};
 pub use statement::Query;
 pub use sub::SubscriptionGuard;
 pub use sync_row::SyncRow;

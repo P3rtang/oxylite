@@ -29,13 +29,11 @@ pub fn use_query<T: FromRow + 'static>(query: Query) -> Signal<Result<Vec<T>, En
     use_effect(move || {
         rev.read();
         let q = run_query.clone();
+
         spawn(async move {
             match engine().query::<T>(&q).await {
                 Ok(rows) => out.set(Ok(rows)),
-                Err(e) => {
-                    log("query", &format!("{e}"));
-                    out.set(Err(e));
-                }
+                Err(e) => out.set(Err(e)),
             }
         });
     });
@@ -49,6 +47,6 @@ pub fn use_query<T: FromRow + 'static>(query: Query) -> Signal<Result<Vec<T>, En
 /// impls it gets the full read/write machinery, and anything bespoke
 /// (joined views, filtered lists) overrides the defaults or passes its
 /// own `Query` to `use_query`.
-pub fn use_all<T: SyncRow + 'static>() -> Signal<Result<Vec<T>, EngineError>> {
+pub fn use_select_all<T: SyncRow + 'static>() -> Signal<Result<Vec<T>, EngineError>> {
     use_query::<T>(Query::new(&T::select_all_sql()).dep(Dep::Table(T::TABLE)))
 }

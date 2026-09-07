@@ -7,8 +7,8 @@ mod notes;
 use dioxus::prelude::*;
 use notes::{Note, new_note, notes_sink, op_for_note};
 use shared::Table;
-use sync::engine::{self, engine};
-use sync::query::{SyncRow, use_all};
+use sync::engine::{self, engine, log};
+use sync::query::{SyncRow, use_select_all};
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -22,7 +22,7 @@ fn App() -> Element {
     // The entire data integration: one live query. Re-runs whenever the
     // notes table changes, locally or via server events. Errors surface
     // here instead of a silently empty list.
-    let result = use_all::<Note>();
+    let result = use_select_all::<Note>();
     let notes_state = result.read().clone();
     let status = engine::STATUS.read().clone();
     let mut title_input = use_signal(String::new);
@@ -86,12 +86,19 @@ fn submit(mut title_input: Signal<String>) {
     spawn(async move {
         let e = engine();
         let note = new_note(&t);
-        e.exec(
-            &Note::insert_sql(),
-            &note.params(),
-            &[(Note::TABLE, note.id)],
-        )
-        .await;
+        // The push happens even if the local write failed: the server is
+        // the source of truth and will sync the op back. A failed write
+        // still must not vanish silently.
+        if let Err(err) = e
+            .exec(
+                &Note::insert_sql(),
+                &note.params(),
+                &[(Note::TABLE, note.id)],
+            )
+            .await
+        {
+            log("submit", &format!("{err}"));
+        }
         e.push(op_for_note(&note));
     });
 }

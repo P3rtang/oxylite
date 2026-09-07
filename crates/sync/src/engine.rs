@@ -180,19 +180,21 @@ impl Engine {
 
     /// Run a local write, then invalidate queries depending on `touched` —
     /// the same path remote events take, so offline writes light up the UI
-    /// identically.
-    pub async fn exec(&self, sql: &str, params: &[String], touched: &[(Table, Uuid)]) {
-        let db = match Pglite::init(self.migrations).await {
-            Ok(p) => p,
-            Err(e) => {
-                log("exec", &format!("db not ready: {e}"));
-                return;
-            }
-        };
-        match db.query(sql, params).await {
-            Ok(_) => self.bump(touched),
-            Err(e) => log("exec", &format!("write failed: {e}")),
-        }
+    /// identically. The write is the caller's to check: a failed local
+    /// write is returned, not swallowed (the op can still be pushed — the
+    /// server is the source of truth and will sync it back).
+    pub async fn exec(
+        &self,
+        sql: &str,
+        params: &[String],
+        touched: &[(Table, Uuid)],
+    ) -> Result<(), EngineError> {
+        let db = Pglite::init(self.migrations)
+            .await
+            .map_err(EngineError::DbInit)?;
+        db.query(sql, params).await.map_err(EngineError::from)?;
+        self.bump(touched);
+        Ok(())
     }
 
     /// Deliver an operation: send it if the socket is OPEN, else queue it
