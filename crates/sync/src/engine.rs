@@ -468,7 +468,7 @@ async fn save_cursor(pglite: &Pglite, cursor: i64) {
 }
 
 /// Sleep in the browser without tokio (wasm has no time driver).
-pub(crate) async fn timer_pause(ms: u32) {
+pub async fn timer_pause(ms: u32) {
     let p = js_sys::Promise::new(&mut |resolve, _reject| {
         let cb = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
             let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);

@@ -8,5 +8,5 @@ pub mod engine;
 pub mod pglite;
 pub mod query;
 
-pub use engine::{Engine, EngineError, STATUS, engine, init};
+pub use engine::{Engine, EngineError, STATUS, engine, init, timer_pause};
 pub use pglite::{BridgeError, Pglite};

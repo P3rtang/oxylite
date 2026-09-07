@@ -3,11 +3,13 @@
 //! list, one submit path, no sockets, no global state beyond the engine.
 
 mod notes;
+mod notify;
 
 use dioxus::prelude::*;
 use notes::{Note, new_note, notes_sink, op_for_note};
+use notify::{Notice, NoticeOverlay, notify};
 use shared::Table;
-use sync::engine::{self, engine, log};
+use sync::engine::{self, engine};
 use sync::query::{SyncRow, use_select_all};
 
 fn main() {
@@ -35,6 +37,7 @@ fn App() -> Element {
     });
 
     rsx! {
+        NoticeOverlay {}
         div { style: "max-width: 640px; margin: 2rem auto; font-family: system-ui, sans-serif",
             h1 { "Offline Notes" }
             p { style: "color:#666",
@@ -97,7 +100,7 @@ fn submit(mut title_input: Signal<String>) {
             )
             .await
         {
-            log("submit", &format!("{err}"));
+            notify(Notice::new("Write failed", err.to_string()));
         }
         e.push(op_for_note(&note));
     });
