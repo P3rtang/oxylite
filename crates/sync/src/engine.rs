@@ -42,6 +42,15 @@ pub enum EngineError {
     /// The SQL failed or a row didn't map to the result type (FromRow).
     #[error("query failed: {0}")]
     Query(String),
+    /// The app never registered a row sink for this table — a setup bug.
+    /// Surfaced instead of faking an empty success: the cursor would
+    /// otherwise advance past data the client silently dropped.
+    #[error("no row sink registered for {0:?}")]
+    NoSink(Table),
+    /// A registered row sink failed to write its batch (payload didn't
+    /// parse, or the upsert SQL failed).
+    #[error("sink failed: {0}")]
+    Sink(String),
 }
 
 pub struct Engine {
@@ -87,7 +96,8 @@ pub type RowSink = Rc<
     dyn for<'a> Fn(
         &'a Pglite,
         &'a [serde_json::Value],
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Vec<Uuid>, String>> + 'a>>,
+    )
+        -> std::pin::Pin<Box<dyn Future<Output = Result<Vec<Uuid>, EngineError>> + 'a>>,
 >;
 
 /// Handle to the engine singleton.
@@ -109,15 +119,15 @@ impl Engine {
         db: &Pglite,
         table: Table,
         rows: &[serde_json::Value],
-    ) -> Result<Vec<Uuid>, String> {
+    ) -> Result<Vec<Uuid>, EngineError> {
         // Clone the Rc out so no borrow is held across the await.
         let sink = self.sinks.borrow().get(&table).cloned();
         match sink {
             Some(f) => (f)(db, rows).await,
-            None => {
-                log("sync", &format!("no sink registered for {:?}", table));
-                Ok(Vec::new())
-            }
+            // A missing sink is a setup bug (the app forgot to register a
+            // table) — surface it, never fake an empty success: the cursor
+            // would advance past data the client silently dropped.
+            None => Err(EngineError::NoSink(table)),
         }
     }
     /// Register a live query; returns an RAII guard whose Drop unsubscribes

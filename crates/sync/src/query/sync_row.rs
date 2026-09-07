@@ -1,6 +1,7 @@
 //! The synced-row contract: FromRow + the SQL shape the engine needs, plus
 //! the generic batch sink built on it.
 
+use crate::engine::{EngineError, error_text};
 use crate::pglite::Pglite;
 use shared::Table;
 use uuid::Uuid;
@@ -101,7 +102,10 @@ pub trait SyncRow: FromRow + Sized {
 /// Apply a batch of payload rows (Events or a Snapshot): parse, dedup to
 /// the last row per PK (log order is the LWW tiebreak), then one multi-row
 /// upsert per chunk. A fresh IndexedDB must not pay one round-trip per row.
-pub async fn bulk_upsert<T>(db: &Pglite, rows: &[serde_json::Value]) -> Result<Vec<Uuid>, String>
+pub async fn bulk_upsert<T>(
+    db: &Pglite,
+    rows: &[serde_json::Value],
+) -> Result<Vec<Uuid>, EngineError>
 where
     T: SyncRow + serde::de::DeserializeOwned,
 {
@@ -109,7 +113,8 @@ where
     let mut by_pk: std::collections::HashMap<Uuid, T> =
         std::collections::HashMap::with_capacity(rows.len());
     for v in rows {
-        let row: T = serde_json::from_value(v.clone()).map_err(|e| e.to_string())?;
+        let row: T =
+            serde_json::from_value(v.clone()).map_err(|e| EngineError::Sink(e.to_string()))?;
         if !by_pk.contains_key(&row.pk()) {
             order.push(row.pk());
         }
@@ -124,7 +129,7 @@ where
         let params: Vec<String> = chunk.iter().flat_map(|r| r.params().into_iter()).collect();
         db.query(&T::upsert_sql(chunk.len()), &params)
             .await
-            .map_err(|e| crate::engine::error_text(&e))?;
+            .map_err(|e| EngineError::Sink(error_text(&e)))?;
     }
 
     Ok(order)
