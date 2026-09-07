@@ -24,6 +24,15 @@ use crate::query::{Query, Sub, SubId};
 use dioxus::prelude::{Global, Signal, WritableExt};
 use shared::{ClientMsg, Op, ServerMsg, Table};
 
+/// Connection status for the UI status line. A GlobalSignal because it is
+/// engine-owned (not per-component) and must initialize outside any dioxus
+/// scope — plain `Signal::new` panics outside the runtime.
+pub static STATUS: Global<Signal<String>, String> = Signal::global(|| "starting…".to_string());
+
+thread_local! {
+    static ENGINE: RefCell<Option<Rc<Engine>>> = const { RefCell::new(None) };
+}
+
 /// Why a query call failed, surfaced to call sites via `Signal<Result<..>>`
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EngineError {
@@ -34,11 +43,6 @@ pub enum EngineError {
     #[error("query failed: {0}")]
     Query(String),
 }
-
-/// Connection status for the UI status line. A GlobalSignal because it is
-/// engine-owned (not per-component) and must initialize outside any dioxus
-/// scope — plain `Signal::new` panics outside the runtime.
-pub static STATUS: Global<Signal<String>, String> = Signal::global(|| "starting…".to_string());
 
 pub struct Engine {
     /// The app's schema migrations, applied to every fresh local DB.
@@ -55,12 +59,8 @@ pub struct Engine {
     /// Where we've streamed sync_log to; persisted in the client's meta
     /// table so it survives reloads.
     cursor: Cell<i64>,
-    /// Per-table appliers registered by the app.
-    appliers: RefCell<HashMap<Table, Applier>>,
-}
-
-thread_local! {
-    static ENGINE: RefCell<Option<Rc<Engine>>> = const { RefCell::new(None) };
+    /// Per-table row sinks registered by the app.
+    sinks: RefCell<HashMap<Table, RowSink>>,
 }
 
 /// Create the engine singleton. Called once from `main`, before launch, so
@@ -74,16 +74,16 @@ pub fn init(migrations: &'static [(&'static str, &'static str)]) {
             inbox: RefCell::new(Vec::new()),
             pending: RefCell::new(Vec::new()),
             cursor: Cell::new(-1),
-            appliers: RefCell::new(HashMap::new()),
+            sinks: RefCell::new(HashMap::new()),
         }));
     });
 }
 
-/// App-provided applier for one table: writes that table's payload rows
-/// (Events payloads or a Snapshot) into the local DB. The app owns the
-/// mapping (it names its row types); the engine just dispatches — the
-/// dynamic-dispatch boundary of this library.
-pub type Applier = Rc<
+/// App-provided sink for one table's rows: writes that table's payload
+/// rows (Events payloads or a Snapshot) into the local DB. The app owns
+/// the mapping (it names its row types); the engine just sinks rows into
+/// it — the dynamic-dispatch boundary of this library.
+pub type RowSink = Rc<
     dyn for<'a> Fn(
         &'a Pglite,
         &'a [serde_json::Value],
@@ -96,14 +96,14 @@ pub fn engine() -> Rc<Engine> {
 }
 
 impl Engine {
-    /// Register the app's applier for one table: what the engine calls to
+    /// Register the app's sink for one table: what the engine calls to
     /// write that table's payload rows into the local DB. The app owns the
-    /// mapping (it names its row types); the engine just dispatches.
-    pub fn register_applier(&self, table: Table, applier: Applier) {
-        self.appliers.borrow_mut().insert(table, applier);
+    /// mapping (it names its row types); the engine just sinks rows into it.
+    pub fn register_sink(&self, table: Table, sink: RowSink) {
+        self.sinks.borrow_mut().insert(table, sink);
     }
 
-    /// Apply one table's batch through its registered applier.
+    /// Sink one table's batch through its registered row sink.
     async fn apply_batch(
         &self,
         db: &Pglite,
@@ -111,11 +111,11 @@ impl Engine {
         rows: &[serde_json::Value],
     ) -> Result<Vec<Uuid>, String> {
         // Clone the Rc out so no borrow is held across the await.
-        let applier = self.appliers.borrow().get(&table).cloned();
-        match applier {
+        let sink = self.sinks.borrow().get(&table).cloned();
+        match sink {
             Some(f) => (f)(db, rows).await,
             None => {
-                log("sync", &format!("no applier registered for {:?}", table));
+                log("sync", &format!("no sink registered for {:?}", table));
                 Ok(Vec::new())
             }
         }

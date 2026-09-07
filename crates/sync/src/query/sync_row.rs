@@ -1,5 +1,5 @@
 //! The synced-row contract: FromRow + the SQL shape the engine needs, plus
-//! the generic batch applier built on it.
+//! the generic batch sink built on it.
 
 use crate::pglite::Pglite;
 use shared::Table;

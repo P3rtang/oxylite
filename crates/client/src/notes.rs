@@ -1,5 +1,5 @@
 //! App-level note glue: the client's row type, its mapping, op building,
-//! and the applier the engine dispatches to. All SQL comes from the
+//! and the row sink the engine dispatches to. All SQL comes from the
 //! [`SyncRow`] contract — this file declares the mapping and the table's
 //! LWW column. The engine stays generic: it never names a note.
 
@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use shared::{Op, Table};
-use sync::engine::Applier;
+use sync::engine::RowSink;
 use sync::pglite::{Pglite, str_field};
 use sync::query::{FromRow, Row, SyncRow, bulk_upsert};
 use uuid::Uuid;
@@ -23,10 +23,10 @@ pub struct Note {
     pub updated_at: String, // ISO 8601
 }
 
-/// The engine dispatches this for `Table::Notes` payloads (Events and
-/// Snapshots). Registered in main at startup — ownership requires the
-/// mapping to live app-side, since it names `Note`.
-pub fn notes_applier() -> Applier {
+/// The engine sinks `Table::Notes` payloads here (Events and Snapshots).
+/// Registered in main at startup — ownership requires the mapping to
+/// live app-side, since it names `Note`.
+pub fn notes_sink() -> RowSink {
     Rc::new(|db: &Pglite, rows: &[serde_json::Value]| Box::pin(bulk_upsert::<Note>(db, rows)))
 }
 

@@ -5,7 +5,7 @@
 mod notes;
 
 use dioxus::prelude::*;
-use notes::{Note, new_note, notes_applier, op_for_note};
+use notes::{Note, new_note, notes_sink, op_for_note};
 use shared::Table;
 use sync::engine::{self, engine};
 use sync::query::{SyncRow, use_all};
@@ -13,7 +13,7 @@ use sync::query::{SyncRow, use_all};
 fn main() {
     console_error_panic_hook::set_once();
     engine::init(shared::MIGRATIONS);
-    engine().register_applier(Table::Notes, notes_applier());
+    engine().register_sink(Table::Notes, notes_sink());
     dioxus::launch(App);
 }
 

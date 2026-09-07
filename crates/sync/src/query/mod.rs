@@ -8,7 +8,7 @@
 //!
 //! This module is structure only: every file declares its items, `mod.rs`
 //! is imports/re-exports. Error types live in `engine.rs` (they cross the
-//! whole client), the row contract (`SyncRow`) and its generic applier are
+//! whole client), the row contract (`SyncRow`) and its generic batch sink are
 //! in `sync_row`, the reactive plumbing (`Query`/`Sub`/`Subscription`,
 //! `use_query`/`use_all`) in their own files.
 
