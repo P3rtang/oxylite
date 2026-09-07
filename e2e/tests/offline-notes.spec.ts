@@ -104,3 +104,24 @@ test("cold client bulk-loads a snapshot instead of replaying row by row", async 
   await ctx.close();
 });
 
+test("apply failures surface in the notice overlay", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByText("connected")).toBeVisible({ timeout: 30_000 });
+
+  // A malformed sync_log row (payload without the required fields) must
+  // fail the notes sink and surface as a notice — not vanish into the
+  // console. Inserted AFTER connect, so the ticker streams it directly
+  // (no snapshot rebuild can swallow it).
+  execSync(
+    `podman compose exec -T postgres psql -U sync -d offline_notes -c ` +
+      `"INSERT INTO sync_log (table_name, row_id, payload) ` +
+      `VALUES ('notes', gen_random_uuid(), '{}'::jsonb);"`,
+    { cwd: ".." }, // playwright runs from e2e/; compose file is at the repo root
+  );
+
+  const toast = page.getByText("Sync failed");
+  await expect(toast).toBeVisible({ timeout: 10_000 });
+  // ...and auto-dismissed (notify removes it after 4s).
+  await expect(toast).toBeHidden({ timeout: 10_000 });
+});
+

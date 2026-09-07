@@ -9,7 +9,7 @@ use dioxus::prelude::*;
 use notes::{Note, new_note, notes_sink, op_for_note};
 use notify::{Notice, NoticeOverlay, notify};
 use shared::Table;
-use sync::engine::{self, engine};
+use sync::engine::{self, EngineError, engine};
 use sync::query::{SyncRow, use_select_all};
 
 fn main() {
@@ -28,6 +28,19 @@ fn App() -> Element {
     let notes_state = result.read().clone();
     let status = engine::STATUS.read().clone();
     let mut title_input = use_signal(String::new);
+
+    // Sync-layer failures surface centrally: the engine publishes its last
+    // apply failure, the app turns each NEW one into a notice.
+    let mut shown_error = use_signal(|| None::<EngineError>);
+    use_effect(move || {
+        let err = engine::LAST_ERROR.read().clone();
+        if let Some(e) = err
+            && shown_error.read().as_ref() != Some(&e)
+        {
+            notify(Notice::new("Sync failed", e.to_string()));
+            shown_error.set(Some(e));
+        }
+    });
 
     // The only long-lived task in the app: the engine's connect loop.
     use_effect(move || {

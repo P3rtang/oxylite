@@ -29,6 +29,13 @@ use shared::{ClientMsg, Op, ServerMsg, Table};
 /// scope — plain `Signal::new` panics outside the runtime.
 pub static STATUS: Global<Signal<String>, String> = Signal::global(|| "starting…".to_string());
 
+/// The most recent batch the sinks could not write (Events payloads or a
+/// Snapshot). The engine only logs; the app observes this to surface sync
+/// failures centrally (overlay/notifications). PartialEq on EngineError
+/// lets observers dedupe repeated failures.
+pub static LAST_ERROR: Global<Signal<Option<EngineError>>, Option<EngineError>> =
+    Signal::global(|| None);
+
 thread_local! {
     static ENGINE: RefCell<Option<Rc<Engine>>> = const { RefCell::new(None) };
 }
@@ -371,7 +378,10 @@ impl Engine {
                         .collect();
                     match self.apply_batch(db, table, &rows).await {
                         Ok(ids) => touched.extend(ids.into_iter().map(|id| (table, id))),
-                        Err(e) => log("sync", &format!("apply failed: {e}")),
+                        Err(e) => {
+                            log("sync", &format!("apply failed: {e}"));
+                            *LAST_ERROR.write_unchecked() = Some(e);
+                        }
                     }
                 }
                 // One bump per batch, not per op: replaying a backlog must
