@@ -4,7 +4,8 @@
 #   ./test.sh --lint      # rust build + fmt --check + clippy + unit tests
 #   ./test.sh --e2e       # fresh client dist + playwright suite
 #   ./test.sh --full      # lint + e2e
-#   --fresh               # (with e2e/full) wipe the postgres volume first
+#   --fresh               # (with e2e/full) rebuild the default state from
+#                         # migrations + seed, refreshing the committed dump
 #
 # Everything runs from a clean state: --e2e kills any server on :3000 and
 # rebuilds the dist via dx (the stale-wasm class of bug lives in forgetting
@@ -56,17 +57,23 @@ lint() {
 }
 
 e2e() {
-    if $fresh; then
-        blue "resetting postgres volume (--fresh)…"
-        (cd "$ROOT" && podman compose down -v) >/dev/null 2>&1
-    fi
-
     # A running server would be reused by playwright's webServer check and
-    # might be a stale binary — consistency means restarting it.
+    # might be a stale binary — consistency means restarting it. It also
+    # must not hold connections while the default state is restored.
     if pid="$(port_pid "$PORT_SERVER")" && [ -n "$pid" ]; then
         blue "stopping stale server (pid $pid)…"
         kill "$pid" 2>/dev/null || true
         sleep 1
+    fi
+
+    if $fresh; then
+        # Wipe the volume, re-apply migrations, re-seed, refresh the
+        # committed dump — the honest baseline after migration changes.
+        "$ROOT/scripts/db-default.sh" rebuild
+    else
+        # Every run starts from the committed default state: deterministic
+        # and free of accumulated test junk (restore is fast, no restart).
+        "$ROOT/scripts/db-default.sh" restore
     fi
 
     # Dist freshness is owned by the serve steps, not here: the webServer
