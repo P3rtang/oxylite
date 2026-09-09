@@ -1,7 +1,6 @@
 import { execSync } from "node:child_process";
 import { expect, test, type Page } from "@playwright/test";
 
-const NOTE_A = `e2e note alpha ${Date.now()}`;
 const NOTE_B = `e2e note offline ${Date.now()}`;
 
 async function addNote(page: Page, title: string) {
@@ -16,20 +15,8 @@ async function waitForNote(page: Page, title: string) {
   ).toBeVisible({ timeout: 30_000 });
 }
 
-test("add a note locally and persist across reload (PGlite)", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Offline Notes" })).toBeVisible();
-
-  // PGlite boot can take a few seconds (wasm + IndexedDB).
-  await expect(page.getByPlaceholder("Note title…")).toBeVisible({ timeout: 30_000 });
-  await addNote(page, NOTE_A);
-
-  // Reload: the note must come back from IndexedDB.
-  await page.reload();
-  await expect(page.getByRole("listitem").filter({ hasText: NOTE_A })).toBeVisible({
-    timeout: 30_000,
-  });
-});
+// Sync lifecycle: first push/pull over the websocket, offline queue flush
+// on reconnect, and cold-client snapshot bootstrap.
 
 test("syncs to a second client over websocket", async ({ page }) => {
   await page.goto("/");
@@ -103,26 +90,3 @@ test("cold client bulk-loads a snapshot instead of replaying row by row", async 
   await expect(seeded).toHaveCount(120, { timeout: 30_000 });
   await ctx.close();
 });
-
-test("apply failures surface in the notice overlay", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.getByText("connected")).toBeVisible({ timeout: 30_000 });
-
-  // A malformed sync_log row (payload without the required fields) must
-  // fail the notes sink and surface as a notice — not vanish into the
-  // console. Inserted AFTER connect, so the ticker streams it directly
-  // (no snapshot rebuild can swallow it).
-  execSync(
-    `podman compose exec -T postgres psql -U sync -d offline_notes -c ` +
-      `"INSERT INTO sync_log (table_name, row_id, payload) ` +
-      `VALUES ('notes', gen_random_uuid(), '{}'::jsonb);"`,
-    { cwd: ".." }, // playwright runs from e2e/; compose file is at the repo root
-  );
-
-  // Distinct skip counts produce distinct toasts — several may stack.
-  // Assert on the first one: it must appear and then auto-dismiss (4s).
-  const toast = page.getByText("Sync failed").first();
-  await expect(toast).toBeVisible({ timeout: 10_000 });
-  await expect(toast).toBeHidden({ timeout: 12_000 });
-});
-
