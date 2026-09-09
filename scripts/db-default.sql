@@ -18,13 +18,17 @@ SET row_security = off;
 
 ALTER TABLE IF EXISTS ONLY public.sync_log DROP CONSTRAINT IF EXISTS sync_log_pkey;
 ALTER TABLE IF EXISTS ONLY public.snapshots DROP CONSTRAINT IF EXISTS snapshots_pkey;
+ALTER TABLE IF EXISTS ONLY public.pending_ops DROP CONSTRAINT IF EXISTS pending_ops_pkey;
 ALTER TABLE IF EXISTS ONLY public.notes DROP CONSTRAINT IF EXISTS notes_pkey;
 ALTER TABLE IF EXISTS ONLY public.meta DROP CONSTRAINT IF EXISTS meta_pkey;
 ALTER TABLE IF EXISTS ONLY public._sqlx_migrations DROP CONSTRAINT IF EXISTS _sqlx_migrations_pkey;
 ALTER TABLE IF EXISTS public.sync_log ALTER COLUMN seq DROP DEFAULT;
+ALTER TABLE IF EXISTS public.pending_ops ALTER COLUMN seq DROP DEFAULT;
 DROP SEQUENCE IF EXISTS public.sync_log_seq_seq;
 DROP TABLE IF EXISTS public.sync_log;
 DROP TABLE IF EXISTS public.snapshots;
+DROP SEQUENCE IF EXISTS public.pending_ops_seq_seq;
+DROP TABLE IF EXISTS public.pending_ops;
 DROP TABLE IF EXISTS public.notes;
 DROP TABLE IF EXISTS public.meta;
 DROP TABLE IF EXISTS public._sqlx_migrations;
@@ -73,6 +77,39 @@ CREATE TABLE public.notes (
 
 
 ALTER TABLE public.notes OWNER TO sync;
+
+--
+-- Name: pending_ops; Type: TABLE; Schema: public; Owner: sync
+--
+
+CREATE TABLE public.pending_ops (
+    seq bigint NOT NULL,
+    op text NOT NULL
+);
+
+
+ALTER TABLE public.pending_ops OWNER TO sync;
+
+--
+-- Name: pending_ops_seq_seq; Type: SEQUENCE; Schema: public; Owner: sync
+--
+
+CREATE SEQUENCE public.pending_ops_seq_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.pending_ops_seq_seq OWNER TO sync;
+
+--
+-- Name: pending_ops_seq_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: sync
+--
+
+ALTER SEQUENCE public.pending_ops_seq_seq OWNED BY public.pending_ops.seq;
+
 
 --
 -- Name: snapshots; Type: TABLE; Schema: public; Owner: sync
@@ -124,6 +161,13 @@ ALTER SEQUENCE public.sync_log_seq_seq OWNED BY public.sync_log.seq;
 
 
 --
+-- Name: pending_ops seq; Type: DEFAULT; Schema: public; Owner: sync
+--
+
+ALTER TABLE ONLY public.pending_ops ALTER COLUMN seq SET DEFAULT nextval('public.pending_ops_seq_seq'::regclass);
+
+
+--
 -- Name: sync_log seq; Type: DEFAULT; Schema: public; Owner: sync
 --
 
@@ -139,6 +183,7 @@ COPY public._sqlx_migrations (version, description, installed_on, success, check
 2	sync log	2026-01-01 00:00:00+00	t	\\xff1665d404babc8c86cf2fbf4b72ba7670449f97c34a508125c42589c31b4cb2bcc1aae755d55a03f4a197926e636798	0
 3	meta	2026-01-01 00:00:00+00	t	\\x1696090c2455a209c5879724b99a609a2ea9daf5ce26ca24332f9d5348d2895513e88811b6daaaf529913cb0cb4fedfa	0
 4	snapshots	2026-01-01 00:00:00+00	t	\\x8883d52f517d4e909331f9c855f5786a12bc40f0b466b0fa45d890360267422038f18c75cf58e517406e66fb0916ac9e	0
+5	pending ops	2026-01-01 00:00:00+00	t	\\x9de44a7e6a968baec6d7798c6e4dd6f9e480d9af25cb06313ef26fb4bd0e555a0a8bed7c8f53db263adff11ad5516466	0
 \.
 
 
@@ -162,6 +207,14 @@ COPY public.notes (id, title, body, updated_at) FROM stdin;
 
 
 --
+-- Data for Name: pending_ops; Type: TABLE DATA; Schema: public; Owner: sync
+--
+
+COPY public.pending_ops (seq, op) FROM stdin;
+\.
+
+
+--
 -- Data for Name: snapshots; Type: TABLE DATA; Schema: public; Owner: sync
 --
 
@@ -178,6 +231,13 @@ COPY public.sync_log (seq, table_name, row_id, payload) FROM stdin;
 2	notes	01980000-0000-7000-8000-000000000002	{"id": "01980000-0000-7000-8000-000000000002", "body": "Writes land in local PGlite first, then sync over websocket with LWW.", "title": "seed: offline-first", "updated_at": "2026-01-01T00:00:02.000Z"}
 3	notes	01980000-0000-7000-8000-000000000003	{"id": "01980000-0000-7000-8000-000000000003", "body": "One engine per browser — subordinate tabs proxy to the leader.", "title": "seed: multi-tab", "updated_at": "2026-01-01T00:00:03.000Z"}
 \.
+
+
+--
+-- Name: pending_ops_seq_seq; Type: SEQUENCE SET; Schema: public; Owner: sync
+--
+
+SELECT pg_catalog.setval('public.pending_ops_seq_seq', 1, false);
 
 
 --
@@ -209,6 +269,14 @@ ALTER TABLE ONLY public.meta
 
 ALTER TABLE ONLY public.notes
     ADD CONSTRAINT notes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: pending_ops pending_ops_pkey; Type: CONSTRAINT; Schema: public; Owner: sync
+--
+
+ALTER TABLE ONLY public.pending_ops
+    ADD CONSTRAINT pending_ops_pkey PRIMARY KEY (seq);
 
 
 --

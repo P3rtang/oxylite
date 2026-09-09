@@ -138,8 +138,6 @@ pub struct Engine {
     /// Server messages parsed by the onmessage callback, awaiting the
     /// master task.
     inbox: RefCell<Vec<ServerMsg>>,
-    /// Local writes that could not be delivered while offline.
-    pending: RefCell<Vec<Op>>,
     /// Where we've streamed sync_log to; persisted in the client's meta
     /// table so it survives reloads.
     cursor: Cell<i64>,
@@ -170,7 +168,6 @@ pub fn init(migrations: &'static [(&'static str, &'static str)]) {
         subs: RefCell::new(Vec::new()),
         sock: RefCell::new(None),
         inbox: RefCell::new(Vec::new()),
-        pending: RefCell::new(Vec::new()),
         cursor: Cell::new(-1),
         sinks: RefCell::new(HashMap::new()),
         role: Cell::new(None),
@@ -387,17 +384,18 @@ impl Engine {
         }
     }
 
-    /// Deliver an operation: send it if the socket is OPEN, else queue it
-    /// for the next connect (at-least-once; LWW makes retries harmless).
-    /// Subordinates hand the op to the leader, whose queue it becomes.
+    /// Deliver an operation: send it if the socket is OPEN, else persist
+    /// it in the durable op log (pending_ops) for the connect flush.
+    /// At-least-once; LWW makes retries harmless. Subordinates hand the
+    /// op to the leader, whose log it becomes.
     pub async fn push(&self, op: Op) {
         match self.wait_role().await {
-            Role::Leader => self.push_local(op),
+            Role::Leader => self.push_local(op).await,
             Role::Follower => self.post(&TabMsg::Push { op }),
         }
     }
 
-    fn push_local(&self, op: Op) {
+    async fn push_local(&self, op: Op) {
         let open = self
             .sock
             .borrow()
@@ -405,8 +403,34 @@ impl Engine {
             .is_some_and(|ws| ws.ready_state() == WebSocket::OPEN);
         if open {
             self.send(&ClientMsg::Push { ops: vec![op] });
-        } else {
-            self.pending.borrow_mut().push(op);
+            return;
+        }
+        // Offline: the op must survive this tab (and this engine) dying.
+        // Persist before anything else can forget it; a failed write is
+        // surfaced — an op that vanishes here is lost cross-client.
+        let db = match Pglite::init(self.migrations).await {
+            Ok(db) => db,
+            Err(e) => {
+                log("sync", &format!("op log unavailable: {e}"));
+                self.set_last_error(EngineError::Sink(format!(
+                    "offline write could not be persisted: {e}"
+                )));
+                return;
+            }
+        };
+        let json = match serde_json::to_string(&op) {
+            Ok(json) => json,
+            Err(e) => {
+                log("sync", &format!("op serialization failed: {e}"));
+                return;
+            }
+        };
+        if let Err(e) = db
+            .query("INSERT INTO pending_ops (op) VALUES ($1)", &[json])
+            .await
+        {
+            log("sync", &format!("op log write failed: {e}"));
+            self.set_last_error(EngineError::Sql(e));
         }
     }
 
@@ -458,11 +482,10 @@ impl Engine {
     /// One-line snapshot of engine state for debugging in the console.
     pub fn debug(&self) -> String {
         format!(
-            "role={:?} cursor={} live_queries={} pending={}",
+            "role={:?} cursor={} live_queries={}",
             self.role.get(),
             self.cursor.get(),
-            self.subs.borrow().len(),
-            self.pending.borrow().len()
+            self.subs.borrow().len()
         )
     }
 
@@ -528,10 +551,76 @@ impl Engine {
         }
     }
     fn send(&self, msg: &ClientMsg) {
-        if let Ok(text) = serde_json::to_string(msg)
-            && let Some(ws) = self.sock.borrow().as_ref()
+        let _ = self.send_ok(msg);
+    }
+
+    /// Serialize and hand to the socket buffer. `Ok` means the frame was
+    /// ACCEPTED (buffered), not delivered — see `flush_pending` for the
+    /// durability consequence.
+    fn send_ok(&self, msg: &ClientMsg) -> bool {
+        let Ok(text) = serde_json::to_string(msg) else {
+            return false;
+        };
+        self.sock
+            .borrow()
+            .as_ref()
+            .is_some_and(|ws| ws.send_with_str(&text).is_ok())
+    }
+
+    /// Drain the durable op log on connect: send what's queued, then
+    /// delete the rows whose send the socket accepted. A refused send
+    /// (socket died mid-flush) keeps its row — the next connect retries
+    /// it. At-least-once: the server may see a row twice across attempts,
+    /// which LWW resolves. The window between an accepted send and the
+    /// server writing it is the same exposure the old in-memory queue
+    /// had (mem::take then fire-and-forget); ack-based deletion is the
+    /// stronger follow-up.
+    async fn flush_pending(&self, db: &Pglite) {
+        let rows = match db
+            .query("SELECT seq::text, op FROM pending_ops ORDER BY seq", &[])
+            .await
         {
-            let _ = ws.send_with_str(&text);
+            Ok(result) => pglite::rows_of(&result),
+            Err(e) => {
+                log("sync", &format!("op log read failed: {e}"));
+                return;
+            }
+        };
+        let mut accepted: Vec<String> = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let Some(seq) = pglite::str_field(row, "seq") else {
+                continue;
+            };
+            let op: Op = match pglite::str_field(row, "op")
+                .and_then(|json| serde_json::from_str(&json).ok())
+            {
+                Some(op) => op,
+                None => {
+                    log("sync", "op log row unparsable — keeping it");
+                    continue;
+                }
+            };
+            if self.send_ok(&ClientMsg::Push { ops: vec![op] }) {
+                accepted.push(seq);
+            }
+        }
+        if accepted.is_empty() {
+            return;
+        }
+        let slots: Vec<String> = (1..=accepted.len()).map(|i| format!("${i}")).collect();
+        if let Err(e) = db
+            .query(
+                &format!(
+                    "DELETE FROM pending_ops WHERE seq IN ({})",
+                    slots.join(", ")
+                ),
+                &accepted,
+            )
+            .await
+        {
+            // The sends were accepted but the delete failed: the next
+            // connect replays them — harmless under LWW.
+            log("sync", &format!("op log cleanup failed: {e}"));
         }
     }
 
@@ -679,7 +768,7 @@ impl Engine {
                 };
                 self.post(&TabMsg::ExecDone { id, result });
             }
-            TabMsg::Push { op } => self.push_local(op),
+            TabMsg::Push { op } => self.push_local(op).await,
             // Replies and broadcasts are addressed to subordinates.
             _ => log("tabs", "reply/broadcast arrived at the leader — dropped"),
         }
@@ -708,10 +797,7 @@ impl Engine {
                         self.send(&ClientMsg::Pull {
                             since: self.cursor.get(),
                         });
-                        let outgoing = std::mem::take(&mut *self.pending.borrow_mut());
-                        for op in outgoing {
-                            self.send(&ClientMsg::Push { ops: vec![op] });
-                        }
+                        self.flush_pending(db).await;
                     }
                     let messages = std::mem::take(&mut *self.inbox.borrow_mut());
                     for msg in messages {

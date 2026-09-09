@@ -55,18 +55,23 @@ restore() {
 
 rebuild() {
     blue "rebuilding default state from migrations + seed…"
-    podman compose down -v >/dev/null 2>&1
-    podman compose up -d >/dev/null 2>&1
-    wait_pg
-
-    # The server applies the embedded migrations on boot; that boot IS the
-    # schema source of truth for the dump.
+    # The sqlx macros validate queries at compile time; in live mode that
+    # needs a populated DB — which a wiped volume cannot offer (and which
+    # earlier failed rebuilds may have left empty). The committed .sqlx
+    # cache (pre-commit hook keeps it fresh) makes the build DB-independent.
     if pid="$(port_pid "$PORT_SERVER")" && [ -n "$pid" ]; then
         blue "stopping stale server (pid $pid)…"
         fuser -k "$PORT_SERVER"/tcp >/dev/null 2>&1 || true
         sleep 1
     fi
-    [ -x "$ROOT/target/debug/server" ] || cargo build -q -p server
+    SQLX_OFFLINE=true cargo build -q -p server
+
+    podman compose down -v >/dev/null 2>&1
+    podman compose up -d >/dev/null 2>&1
+    wait_pg
+
+    # The fresh binary applies the embedded migrations on boot; that boot
+    # IS the schema source of truth for the dump.
     setsid "$ROOT/target/debug/server" >"$ROOT/.logs/db-default-server.log" 2>&1 &
     if ! wait_for_url "http://localhost:3000/health" 60; then
         red "server failed to boot (see .logs/db-default-server.log)"

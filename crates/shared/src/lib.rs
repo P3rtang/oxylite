@@ -98,4 +98,8 @@ pub static MIGRATIONS: &[(&str, &str)] = &[
         "0004_snapshots",
         include_str!("../migrations/0004_snapshots.sql"),
     ),
+    (
+        "0005_pending_ops",
+        include_str!("../migrations/0005_pending_ops.sql"),
+    ),
 ];
