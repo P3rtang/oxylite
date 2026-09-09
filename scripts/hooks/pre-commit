@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Refresh .sqlx offline query data whenever a commit can make it stale.
+#
+# The server uses sqlx's compile-time-checked macros (server sources AND
+# the sync lib's `server` feature), so every database-less build (CI lint
+# job, fresh clone) reads .sqlx at the workspace root. A query or
+# migration changed without re-running `cargo sqlx prepare` breaks those
+# builds — this hook is the enforcement: only those sources and shared
+# migrations can affect checked queries, so anything else skips in
+# microseconds. Postgres down → hard fail (start it, or bypass this one
+# commit with --no-verify; CI's `prepare --check` still guards).
+set -euo pipefail
+source "$(dirname "$0")/../common.sh"
+
+cd "$ROOT"
+
+# Cheap skip: nothing staged that checked queries depend on.
+[ -n "$(git diff --cached --name-only -- crates/server crates/sync crates/shared/migrations)" ] || exit 0
+
+if ! pg_isready -h localhost -p 5432 >/dev/null 2>&1; then
+    red "sqlx pre-commit: postgres is down, can't refresh .sqlx"
+    red "start it: podman compose up -d  —  or bypass once: git commit --no-verify"
+    exit 1
+fi
+
+blue "sqlx pre-commit: refreshing .sqlx…"
+export DATABASE_URL="${DATABASE_URL:-postgres://sync:sync@localhost:5432/offline_notes}"
+cargo sqlx prepare --workspace
+# The refresh may have rewritten query files; carry them into the commit.
+git add .sqlx
+green "sqlx pre-commit: .sqlx current"

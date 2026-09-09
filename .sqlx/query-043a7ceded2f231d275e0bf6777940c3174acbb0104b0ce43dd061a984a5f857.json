@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT seq, table_name, row_id, payload\n         FROM sync_log WHERE seq > $1 ORDER BY seq LIMIT 1000",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seq",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "table_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "row_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "payload",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "043a7ceded2f231d275e0bf6777940c3174acbb0104b0ce43dd061a984a5f857"
+}

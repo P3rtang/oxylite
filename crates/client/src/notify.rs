@@ -42,7 +42,9 @@ pub static NOTICES: Global<Signal<Vec<Notice>>, Vec<Notice>> = Signal::global(Ve
 /// task (event handlers, spawned writes).
 pub fn notify(notice: Notice) {
     let id = notice.id;
+
     NOTICES.write_unchecked().push(notice);
+
     spawn(async move {
         timer_pause(4000).await;
         NOTICES.write_unchecked().retain(|n| n.id != id);

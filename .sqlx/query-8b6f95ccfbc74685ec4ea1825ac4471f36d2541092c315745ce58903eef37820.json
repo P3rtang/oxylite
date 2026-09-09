@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COALESCE(MAX(seq), 0) as \"head!\" FROM sync_log",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "head!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8b6f95ccfbc74685ec4ea1825ac4471f36d2541092c315745ce58903eef37820"
+}

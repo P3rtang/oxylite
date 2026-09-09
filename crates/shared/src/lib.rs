@@ -1,3 +1,4 @@
+use enum_iterator::Sequence;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -57,7 +58,9 @@ pub struct TableData {
 /// forces every match site (apply, invalidate, subscribe) to handle new
 /// tables, and methods can live here. The wire name stays stable via
 /// `as_str` (that's what sync_log's `table_name` column stores).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Iteration over all variants is derived (`Sequence`), so new variants
+/// join `enum_iterator::all::<Table>()` automatically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Sequence, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Table {
     Notes,
