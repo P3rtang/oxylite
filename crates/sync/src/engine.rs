@@ -505,16 +505,20 @@ impl Engine {
     }
 
     fn set_status(&self, text: &str) {
-        self.set_status_relayed(text);
+        *STATUS.write_unchecked() = text.into();
+        *self.status_text.borrow_mut() = text.to_string();
         // The leader is the authority: fan the state out to every tab.
         self.post(&TabMsg::Status {
             text: text.to_string(),
         });
     }
 
+    /// Subordinates render the leader's state behind a role marker: sync
+    /// is delegated to another tab, and tests can tell the roles apart.
     fn set_status_relayed(&self, text: &str) {
-        *STATUS.write_unchecked() = text.into();
-        *self.status_text.borrow_mut() = text.to_string();
+        let shown = format!("subordinate — {text}");
+        *STATUS.write_unchecked() = shown.clone();
+        *self.status_text.borrow_mut() = shown;
     }
 
     fn set_last_error(&self, error: EngineError) {
@@ -565,7 +569,7 @@ impl Engine {
             Some(_hold) => self.run_leader().await,
             None => {
                 self.role.set(Some(Role::Follower));
-                self.set_status_relayed("subordinate — the leader tab owns sync…");
+                self.set_status_relayed("the leader tab owns sync…");
                 self.post(&TabMsg::Hello);
                 log("tabs", "subordinate tab — following the leader");
                 // Queued with the browser from this moment; resolves when

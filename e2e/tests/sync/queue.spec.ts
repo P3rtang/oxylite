@@ -1,15 +1,20 @@
 import { expect, test, type Page } from "@playwright/test";
 
-// Queue durability (#26, docs/impl/multi-tab.md): the engine's pending queue
-// is in-memory (`RefCell<Vec<Op>>`, engine.rs) and dies with the tab — writes
-// committed while offline never enter sync_log unless the SAME engine
-// reconnects. These tests state the durability contract the fix must
-// satisfy; all three are intentionally red until the pending queue is
-// durable (no test.fail(): red is the goal, per the #23 convention — the
-// fix flips them green). They cover the three ways an engine dies with
-// unsynced writes:
-//   1. page reload (single-tab variant: the queue dies with the engine)
-//   2. tab close while a sibling tab survives (handoff must flush)
+// Queue durability (#26, docs/impl/multi-tab.md): the browser's single
+// engine (the leader tab) holds every tab's writes — but its pending
+// queue is in-memory (`RefCell<Vec<Op>>`, engine.rs) and dies with the
+// tab. Writes committed while offline never enter sync_log unless the
+// same leader reconnects. These tests state the durability contract the
+// fix must satisfy; tests 1 and 3 are still intentionally red (no
+// test.fail(): red is the goal, per the #23 convention — the durable
+// queue flips them green). Test 2 went green with the leader/follower
+// engine: a subordinate's write survives the WRITER dying, because the
+// leader holds it. They cover the three ways the browser loses unsynced
+// writes:
+//   1. page reload of the leader (single-tab variant: the queue dies
+//      with the engine)
+//   2. (green) the writing tab is a subordinate and closes — the leader
+//      holds the op
 //   3. every tab closes; a later tab must resume the durable queue
 
 const RELOAD_NOTE = `e2e reload note ${Date.now()}`;
@@ -28,22 +33,51 @@ async function addNote(page: Page, title: string) {
   await expect(page.getByRole("listitem").filter({ hasText: title })).toBeVisible();
 }
 
-// Route the sync socket to a hard close and reload, so the engine
-// reconnects into a dead socket. "offline — will retry…" proves a connect
-// attempt already failed, so the next write queues in pending (not
-// "offline — local data loaded", which shows before the first attempt).
-async function goOffline(page: Page) {
-  await page.routeWebSocket("**/sync", (ws) => ws.close());
-  await page.reload();
-  await expect(page.locator("p").filter({ hasText: /will retry/ })).toBeVisible({
-    timeout: 30_000,
-  });
+// Make the whole browser offline. Two Playwright facts shape this:
+// (1) only the leader tab owns a socket, and a leader reload hands the
+// Web Lock to a queued tab — leadership churns through reloads; (2) a
+// socket route only arms in documents created AFTER the registration (a
+// late registration is inert on the live page — see PLAN.md gotchas), so
+// every tab is reloaded after its close-route is registered and whoever
+// ends up leading reconnects into an armed route. The offline status is
+// browser-wide on every tab.
+async function goOffline(pages: Page[]) {
+  for (const page of pages) {
+    await page.routeWebSocket("**/sync", (ws) => ws.close());
+  }
+  for (const page of pages) {
+    await page.reload();
+  }
+  for (const page of pages) {
+    await expect(page.locator("p").filter({ hasText: /will retry/ })).toBeVisible({
+      timeout: 30_000,
+    });
+  }
+}
+
+// Undo it: a fresh (late) registration disarms the close-routes and is
+// itself inert on the live pages, so the leader's reconnect goes through
+// raw and the flush happens.
+async function goOnline(pages: Page[]) {
+  for (const page of pages) {
+    await page.routeWebSocket("**/sync", (ws) => ws.connectToServer());
+  }
+}
+
+// After goOffline the leader is whichever tab won the promotion race; the
+// follower renders the relayed status with a role marker.
+async function followerOf(pages: Page[]): Promise<Page> {
+  const aSubordinate = await pages[0]
+    .locator("p")
+    .filter({ hasText: /subordinate/ })
+    .isVisible();
+  return aSubordinate ? pages[0] : pages[1];
 }
 
 test("a note written offline survives a reload and reaches a fresh client", async ({ page, browser }) => {
   await boot(page);
 
-  await goOffline(page);
+  await goOffline([page]);
 
   // The write commits locally (IndexedDB) and queues in the in-memory
   // pending — the push never reaches the server.
@@ -73,23 +107,34 @@ test("a note written offline survives a reload and reaches a fresh client", asyn
 });
 
 test("a note written offline in one tab reaches a fresh client after that tab closes", async ({ browser }) => {
-  // A follower's write may not die with the follower (impl/multi-tab.md):
-  // the surviving tab must take over the dead tab's unsynced write.
+  // GREEN since the leader/follower engine: a subordinate's write is
+  // forwarded to the leader's queue, so the writing tab dying no longer
+  // loses it. (Leader death is still lossy until the queue is durable —
+  // the tests above and below.)
   const ctx = await browser.newContext();
   const tabA = await ctx.newPage();
   await boot(tabA);
   const tabB = await ctx.newPage();
   await boot(tabB);
 
-  // tabB goes offline and writes; tabA stays online the whole time.
-  await goOffline(tabB);
-  await addNote(tabB, SURVIVOR_NOTE);
+  // Browser-wide offline: every tab reloads into its armed close-route;
+  // leadership churns and whoever ends up leading is offline.
+  await goOffline([tabA, tabB]);
 
-  // tabB closes — engine, socket and in-memory pending die here.
-  await tabB.close();
+  // The write goes in through the SUBORDINATE tab, so it lands in the
+  // leader's queue, not in the writer's memory.
+  const writer = await followerOf([tabA, tabB]);
+  const leader = writer === tabA ? tabB : tabA;
+  await addNote(writer, SURVIVOR_NOTE);
 
-  // The contract: the write reaches the server anyway (the surviving tab
-  // flushes the shared queue), so a fresh client must eventually see it.
+  // The writing tab closes for good. The op survives: it lives in the
+  // leader's queue.
+  await writer.close();
+
+  // Unblock: the leader's reconnect flushes the queue.
+  await goOnline([leader]);
+
+  // The sync contract: a fresh client must eventually see it.
   const ctx2 = await browser.newContext();
   const other = await ctx2.newPage();
   await boot(other);
@@ -106,18 +151,19 @@ test("notes written offline in two tabs reach a fresh client after both tabs clo
   // sequential on purpose: two LIVE instances writing the same IndexedDB
   // lose writes at the storage layer (later writer clobbers the earlier
   // one's committed row — observed in the first run of this spec, see the
-  // audit finding in docs/impl/multi-tab.md). Single-writer ownership is
-  // part of the fix, not this test.
+  // audit finding in docs/impl/multi-tab.md). Post leader/follower engine
+  // only the leader ever opens PGlite, but the test keeps sequential tabs
+  // so it isolates queue durability regardless of role churn.
   const ctx = await browser.newContext();
   const tabA = await ctx.newPage();
   await boot(tabA);
-  await goOffline(tabA);
+  await goOffline([tabA]);
   await addNote(tabA, TAB_A_NOTE);
   await tabA.close();
 
   const tabB = await ctx.newPage();
   await boot(tabB);
-  await goOffline(tabB);
+  await goOffline([tabB]);
   await addNote(tabB, TAB_B_NOTE);
   await tabB.close();
 
