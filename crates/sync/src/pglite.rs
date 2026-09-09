@@ -127,8 +127,9 @@ impl Pglite {
 /// instead of opaque `JsValue`s (and no prose-parsing anywhere).
 ///
 /// String payloads here are the wire format itself — JS rejections carry
-/// display text, and this is the boundary where it crosses.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+/// display text, and this is the boundary where it crosses. Serializable:
+/// failures of subordinate tabs' requests travel over BroadcastChannel.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
 pub enum BridgeError {
     /// PGlite surfaced a Postgres error: the SQLSTATE code plus the
     /// message (e.g. code 23505, unique violation).

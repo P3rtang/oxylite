@@ -115,6 +115,6 @@ fn submit(mut title_input: Signal<String>) {
         {
             notify(Notice::new("Write failed", err.to_string()));
         }
-        e.push(op_for_note(&note));
+        e.push(op_for_note(&note)).await;
     });
 }

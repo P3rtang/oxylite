@@ -144,7 +144,7 @@ where
 
     if !skipped.is_empty() {
         let first = skipped.first().map(String::as_str).unwrap_or("?");
-        *crate::engine::LAST_ERROR.write_unchecked() = Some(EngineError::Sink(format!(
+        crate::engine::publish_last_error(EngineError::Sink(format!(
             "skipped {} unparseable payload row(s); first: {first}",
             skipped.len()
         )));

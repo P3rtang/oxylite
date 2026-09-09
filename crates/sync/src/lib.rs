@@ -16,6 +16,10 @@ pub mod engine;
 pub mod pglite;
 pub mod query;
 
+// Cross-tab plumbing (Web Locks + BroadcastChannel): internal, reached
+// through the engine's API only.
+mod tabs;
+
 #[cfg(feature = "server")]
 pub mod server;
 

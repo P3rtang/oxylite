@@ -59,13 +59,14 @@ impl FromRow for Note {
     fn from_row(row: &Row) -> Result<Self, RowError> {
         Ok(Note {
             id: str_field(row, "id")
-                .ok_or(RowError::MissingColumn("id"))?
+                .ok_or_else(|| RowError::MissingColumn("id".into()))?
                 .parse()
-                .map_err(|_| RowError::BadUuid("id"))?,
-            title: str_field(row, "title").ok_or(RowError::MissingColumn("title"))?,
-            body: str_field(row, "body").ok_or(RowError::MissingColumn("body"))?,
+                .map_err(|_| RowError::BadUuid("id".into()))?,
+            title: str_field(row, "title")
+                .ok_or_else(|| RowError::MissingColumn("title".into()))?,
+            body: str_field(row, "body").ok_or_else(|| RowError::MissingColumn("body".into()))?,
             updated_at: str_field(row, "updated_at")
-                .ok_or(RowError::MissingColumn("updated_at"))?,
+                .ok_or_else(|| RowError::MissingColumn("updated_at".into()))?,
         })
     }
 }

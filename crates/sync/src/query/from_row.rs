@@ -6,16 +6,17 @@
 pub type Row = js_sys::Object;
 
 /// Why mapping a raw row to `T` failed. Typed so call sites can match on
-/// the shape of the failure instead of parsing prose.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+/// the shape of the failure instead of parsing prose. Serializable: it
+/// rides inside `EngineError` when apply failures relay across tabs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
 pub enum RowError {
     /// The row lacks a column the mapper reads — usually a SELECT that
     /// drifted from the row type.
     #[error("missing column {0:?}")]
-    MissingColumn(&'static str),
+    MissingColumn(String),
     /// A column's value didn't parse into the mapper's type.
     #[error("column {0:?} is not a valid uuid")]
-    BadUuid(&'static str),
+    BadUuid(String),
 }
 
 /// Row -> typed result, mirroring sqlx's `FromRow` so a shared type maps
