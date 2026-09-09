@@ -45,6 +45,16 @@ fn now_iso() -> String {
     js_sys::Date::new_0().to_iso_string().into()
 }
 
+/// Display form of the canonical ISO timestamp: `2026-09-09T12:34:56.789Z`
+/// renders as `2026-09-09 12:34:56`. Display-only — the stored value stays
+/// canonical because LWW compares it as text.
+pub fn display_time(iso: &str) -> String {
+    iso.get(..19)
+        .unwrap_or(iso)
+        .replacen('T', " ", 1)
+        .to_string()
+}
+
 pub fn op_for_note(note: &Note) -> Op {
     Op {
         table: Table::Notes,

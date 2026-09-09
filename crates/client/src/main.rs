@@ -6,7 +6,7 @@ mod notes;
 mod notify;
 
 use dioxus::prelude::*;
-use notes::{Note, new_note, notes_sink, op_for_note};
+use notes::{Note, display_time, new_note, notes_sink, op_for_note};
 use notify::{Notice, NoticeOverlay, notify};
 use shared::Table;
 use sync::engine::{self, EngineError, engine};
@@ -81,7 +81,7 @@ fn App() -> Element {
                 for note in notes_state.as_ref().unwrap_or(&Vec::new()).iter() {
                     li { key: "{note.id}",
                         strong { "{note.title}" }
-                        span { style: "color:#999", " · {note.updated_at}" }
+                        span { style: "color:#999", " · {display_time(&note.updated_at)}" }
                     }
                 }
             }
