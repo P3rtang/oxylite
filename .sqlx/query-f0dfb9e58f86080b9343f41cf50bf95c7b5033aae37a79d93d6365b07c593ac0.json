@@ -8,7 +8,7 @@
         "Uuid",
         "Text",
         "Text",
-        "Text"
+        "Timestamptz"
       ]
     },
     "nullable": []

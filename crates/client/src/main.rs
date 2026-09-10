@@ -137,7 +137,7 @@ fn delete_note(id: uuid::Uuid) {
         if let Err(err) = e
             .exec(
                 &Note::delete_sql(1),
-                &[id.to_string(), op.updated_at.clone()],
+                &[id.to_string(), op.updated_at.canonical_text()],
                 &[(Note::TABLE, id)],
             )
             .await

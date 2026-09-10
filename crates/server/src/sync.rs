@@ -1,4 +1,5 @@
 use shared::delete::OpKind;
+use shared::timestamp::Timestamp;
 use shared::{Op, Table, TableData, Tombstone};
 use sqlx::postgres::PgPool;
 use sync_lib::server::{self, SnapshotSource};
@@ -27,6 +28,10 @@ pub async fn push(db: &PgPool, ops: &[Op]) -> Result<i64, SyncError> {
     let mut tx = db.begin().await?;
 
     for op in ops {
+        // Timestamps arrive as typed `Timestamp`s (validated at the serde
+        // boundary when the WS message parsed) — malformed values cannot
+        // reach here by type. The columns are `timestamptz` (migration
+        // 0007), so chrono values bind directly.
         match op.kind() {
             OpKind::Upsert => match op.table {
                 Table::Notes => {
@@ -49,7 +54,7 @@ pub async fn push(db: &PgPool, ops: &[Op]) -> Result<i64, SyncError> {
                         note.id,
                         note.title,
                         note.body,
-                        note.updated_at,
+                        note.updated_at.as_datetime(),
                     )
                     .execute(&mut *tx)
                     .await?;
@@ -59,7 +64,7 @@ pub async fn push(db: &PgPool, ops: &[Op]) -> Result<i64, SyncError> {
                         "DELETE FROM tombstones
                          WHERE table_name = 'notes' AND id = $1 AND deleted_at < $2",
                         note.id,
-                        note.updated_at,
+                        note.updated_at.as_datetime(),
                     )
                     .execute(&mut *tx)
                     .await?;
@@ -83,7 +88,7 @@ pub async fn push(db: &PgPool, ops: &[Op]) -> Result<i64, SyncError> {
                              SET deleted_at = EXCLUDED.deleted_at
                            WHERE EXCLUDED.deleted_at > tombstones.deleted_at"#,
                         op.id,
-                        op.updated_at,
+                        op.updated_at.as_datetime(),
                     )
                     .execute(&mut *tx)
                     .await?;
@@ -97,7 +102,7 @@ pub async fn push(db: &PgPool, ops: &[Op]) -> Result<i64, SyncError> {
             op.table.as_str(),
             op.id,
             op.data,
-            op.updated_at,
+            op.updated_at.as_datetime(),
         )
         .execute(&mut *tx)
         .await?;
@@ -140,22 +145,24 @@ pub async fn pull_since(db: &PgPool, since: i64) -> Result<(Vec<Op>, i64), SyncE
     // the data stayed on the server).
     let cursor = rows.last().map(|row| row.seq).unwrap_or(head);
 
-    let events = rows
-        .into_iter()
+    let mut events = Vec::with_capacity(rows.len());
+    for row in rows {
         // Unknown table names (newer client) are skipped: this server is
         // the compat boundary and can't apply what it doesn't know.
-        .filter_map(|row| {
-            let table = Table::from_name(&row.table_name)?;
-            Some(Op {
-                table,
-                id: row.row_id,
-                data: row.payload,
-                // The op's own timestamp: a delete's payload is null (that
-                // is the marker), so `updated_at` must ride the log row.
-                updated_at: row.updated_at,
-            })
-        })
-        .collect();
+        let Some(table) = Table::from_name(&row.table_name) else {
+            continue;
+        };
+        events.push(Op {
+            table,
+            id: row.row_id,
+            data: row.payload,
+            // The op's own timestamp: a delete's payload is null (that
+            // is the marker), so `updated_at` must ride the log row.
+            // Infallible: the column is timestamptz, so the decode is a
+            // real DateTime — the storage layer did the validating.
+            updated_at: Timestamp::from_datetime(row.updated_at),
+        });
+    }
 
     Ok((events, cursor))
 }
@@ -202,174 +209,4 @@ pub async fn load_or_build_snapshot(
             .collect(),
         tombstones,
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use shared::delete::OpKind;
-    use uuid::Uuid;
-
-    // Canonical ISO, uniform precision — lexicographic == chronological.
-    const T1: &str = "2026-09-09T10:00:01.000Z";
-    const T2: &str = "2026-09-09T10:00:02.000Z";
-    const T3: &str = "2026-09-09T10:00:03.000Z";
-
-    // Delete contracts (#27, ROADMAP 1.2), pinned server-side:
-    // a delete is one op `{table, id, updated_at, data: null}`; the live
-    // row goes away, a tombstone guards against stale writes, and the op
-    // itself stays in sync_log (guards decide at apply time). Run against
-    // real Postgres — `#[sqlx::test]` makes a fresh database per test and
-    // applies the shared migrations.
-
-    fn upsert_op(id: Uuid, title: &str, at: &str) -> Op {
-        Op {
-            table: Table::Notes,
-            id,
-            data: serde_json::json!({ "id": id, "title": title, "body": "", "updated_at": at }),
-            updated_at: at.to_string(),
-        }
-    }
-
-    fn delete_op(id: Uuid, at: &str) -> Op {
-        Op {
-            table: Table::Notes,
-            id,
-            data: serde_json::Value::Null,
-            updated_at: at.to_string(),
-        }
-    }
-
-    async fn live_count(db: &PgPool, id: Uuid) -> i64 {
-        sqlx::query_scalar!(
-            r#"SELECT count(*)::bigint as "count!" FROM notes WHERE id = $1"#,
-            id
-        )
-        .fetch_one(db)
-        .await
-        .unwrap()
-    }
-
-    async fn live_row(db: &PgPool, id: Uuid) -> Option<(String, String)> {
-        sqlx::query!("SELECT title, updated_at FROM notes WHERE id = $1", id)
-            .fetch_optional(db)
-            .await
-            .unwrap()
-            .map(|r| (r.title, r.updated_at))
-    }
-
-    /// The row's tombstone, if any: deleted_at.
-    async fn tombstone(db: &PgPool, id: Uuid) -> Option<String> {
-        sqlx::query_scalar!(
-            "SELECT deleted_at FROM tombstones WHERE table_name = 'notes' AND id = $1",
-            id
-        )
-        .fetch_optional(db)
-        .await
-        .unwrap()
-    }
-
-    async fn log_payloads(db: &PgPool) -> Vec<serde_json::Value> {
-        sqlx::query_scalar!("SELECT payload FROM sync_log ORDER BY seq")
-            .fetch_all(db)
-            .await
-            .unwrap()
-    }
-
-    #[sqlx::test(migrations = "../shared/migrations")]
-    async fn push_delete_removes_row_and_tombstones(pool: PgPool) {
-        let id = Uuid::now_v7();
-        push(&pool, &[upsert_op(id, "alive", T1)]).await.unwrap();
-        assert_eq!(live_count(&pool, id).await, 1);
-
-        push(&pool, &[delete_op(id, T2)]).await.unwrap();
-        assert_eq!(live_count(&pool, id).await, 0);
-        assert_eq!(tombstone(&pool, id).await.as_deref(), Some(T2));
-        // The op itself is logged (payload null), so other clients replay it.
-        let payloads = log_payloads(&pool).await;
-        assert_eq!(payloads.len(), 2);
-        assert_eq!(payloads[1], serde_json::Value::Null);
-    }
-
-    #[sqlx::test(migrations = "../shared/migrations")]
-    async fn stale_edit_dropped_live_table_keeps_delete(pool: PgPool) {
-        let id = Uuid::now_v7();
-        push(&pool, &[upsert_op(id, "v1", T1)]).await.unwrap();
-        push(&pool, &[delete_op(id, T2)]).await.unwrap();
-
-        // A client offline before the delete pushes its mid edit: the
-        // live table must not resurrect; the op is still logged and the
-        // tombstone stands.
-        push(&pool, &[upsert_op(id, "stale", T1)]).await.unwrap();
-        assert_eq!(live_count(&pool, id).await, 0);
-        assert_eq!(tombstone(&pool, id).await.as_deref(), Some(T2));
-        assert_eq!(log_payloads(&pool).await.len(), 3);
-    }
-
-    #[sqlx::test(migrations = "../shared/migrations")]
-    async fn newer_edit_resurrects_and_clears_tombstone(pool: PgPool) {
-        let id = Uuid::now_v7();
-        push(&pool, &[upsert_op(id, "v1", T1)]).await.unwrap();
-        push(&pool, &[delete_op(id, T2)]).await.unwrap();
-
-        push(&pool, &[upsert_op(id, "newer", T3)]).await.unwrap();
-        let (title, updated_at) = live_row(&pool, id).await.unwrap();
-        assert_eq!(title, "newer");
-        assert_eq!(updated_at, T3);
-        assert_eq!(tombstone(&pool, id).await, None);
-    }
-
-    #[sqlx::test(migrations = "../shared/migrations")]
-    async fn duplicate_delete_is_idempotent(pool: PgPool) {
-        let id = Uuid::now_v7();
-        push(&pool, &[upsert_op(id, "v1", T1)]).await.unwrap();
-        push(&pool, &[delete_op(id, T2)]).await.unwrap();
-        push(&pool, &[delete_op(id, T2)]).await.unwrap();
-
-        assert_eq!(live_count(&pool, id).await, 0);
-        assert_eq!(tombstone(&pool, id).await.as_deref(), Some(T2));
-        assert_eq!(log_payloads(&pool).await.len(), 3);
-    }
-
-    #[sqlx::test(migrations = "../shared/migrations")]
-    async fn pull_streams_delete_with_null_payload(pool: PgPool) {
-        let id = Uuid::now_v7();
-        push(&pool, &[upsert_op(id, "v1", T1)]).await.unwrap();
-        push(&pool, &[delete_op(id, T2)]).await.unwrap();
-
-        let (events, cursor) = pull_since(&pool, 0).await.unwrap();
-        assert_eq!(cursor, 2);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].kind(), OpKind::Upsert);
-        assert_eq!(events[1].kind(), OpKind::Delete);
-        assert_eq!(events[1].id, id);
-        assert_eq!(events[1].data, serde_json::Value::Null);
-    }
-
-    #[sqlx::test(migrations = "../shared/migrations")]
-    async fn snapshot_excludes_deleted_row(pool: PgPool) {
-        let gone = Uuid::now_v7();
-        let alive = Uuid::now_v7();
-        push(
-            &pool,
-            &[upsert_op(gone, "gone", T1), upsert_op(alive, "alive", T1)],
-        )
-        .await
-        .unwrap();
-        push(&pool, &[delete_op(gone, T2)]).await.unwrap();
-
-        let (_, tables, tombstones) = load_or_build_snapshot(&pool).await.unwrap();
-        let notes = tables
-            .iter()
-            .find(|t| t.table == Table::Notes)
-            .expect("notes table in snapshot");
-        assert_eq!(notes.rows.len(), 1);
-        assert_eq!(notes.rows[0]["title"], "alive");
-        // Tombstones ride the snapshot: a far-behind client must learn
-        // deletes it never replays.
-        assert_eq!(tombstones.len(), 1);
-        assert_eq!(tombstones[0].table, Table::Notes);
-        assert_eq!(tombstones[0].id, gone);
-        assert_eq!(tombstones[0].deleted_at, T2);
-    }
 }

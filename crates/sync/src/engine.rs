@@ -35,7 +35,7 @@ use crate::pglite::{self, BridgeError, Pglite};
 use crate::query::{FromRow, Query, RowError, Subscription, SubscriptionGuard, SubscriptionId};
 use crate::tabs;
 use dioxus::prelude::{Global, Signal, WritableExt};
-use shared::{ClientMsg, Op, ServerMsg, Table};
+use shared::{ClientMsg, Op, ServerMsg, Table, timestamp::Timestamp};
 
 /// Connection status for the UI status line. A GlobalSignal because it is
 /// engine-owned (not per-component) and must initialize outside any dioxus
@@ -894,7 +894,14 @@ impl Engine {
                             table: table_data.table,
                             id: Uuid::nil(),
                             data: row.clone(),
-                            updated_at: String::new(),
+                            // Snapshot rows re-enter as upserts. For
+                            // upserts the applier never reads the
+                            // envelope timestamp — the payload's own
+                            // updated_at binds (and serde-validated on
+                            // the way in) — so this epoch placeholder is
+                            // inert; a parse here just keeps the type
+                            // honest instead of smuggling a raw String.
+                            updated_at: Timestamp::parse("1970-01-01T00:00:00.000Z").unwrap(),
                         })
                         .collect();
                     match self.apply_batch(db, table_data.table, &ops).await {

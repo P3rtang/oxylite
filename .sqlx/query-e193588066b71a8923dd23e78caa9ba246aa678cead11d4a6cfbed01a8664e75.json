@@ -16,7 +16,7 @@
       {
         "ordinal": 2,
         "name": "deleted_at",
-        "type_info": "Text"
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {

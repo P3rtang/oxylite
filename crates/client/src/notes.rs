@@ -6,6 +6,7 @@
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
+use shared::timestamp::Timestamp;
 use shared::{Op, Table};
 use sync::engine::RowSink;
 use sync::pglite::{Pglite, str_field};
@@ -20,7 +21,7 @@ pub struct Note {
     pub id: Uuid,
     pub title: String,
     pub body: String,
-    pub updated_at: String, // ISO 8601
+    pub updated_at: Timestamp,
 }
 
 /// The engine sinks `Table::Notes` ops here (Events and Snapshots,
@@ -37,20 +38,24 @@ pub fn new_note(title: &str) -> Note {
         id: Uuid::now_v7(),
         title: title.into(),
         body: String::new(),
-        updated_at: now_iso(),
+        updated_at: now_timestamp(),
     }
 }
 
-fn now_iso() -> String {
-    js_sys::Date::new_0().to_iso_string().into()
+/// The platform clock, as a `Timestamp`: `Date.now()` epoch millis →
+/// `from_epoch_millis`. No strings, no parse, no failure path on a write
+/// (real clock values are always inside chrono's range).
+fn now_timestamp() -> Timestamp {
+    Timestamp::from_epoch_millis(js_sys::Date::now() as i64)
+        .expect("js clock value out of chrono's range")
 }
 
-/// Display form of the canonical ISO timestamp: `2026-09-09T12:34:56.789Z`
-/// renders as `2026-09-09 12:34:56`. Display-only — the stored value stays
-/// canonical because LWW compares it as text.
-pub fn display_time(iso: &str) -> String {
+/// Display form: `2026-09-09T12:34:56.789Z` renders as
+/// `2026-09-09 12:34:56`. Display-only — storage stays canonical.
+pub fn display_time(ts: &Timestamp) -> String {
+    let iso = ts.canonical_text();
     iso.get(..19)
-        .unwrap_or(iso)
+        .unwrap_or(&iso)
         .replacen('T', " ", 1)
         .to_string()
 }
@@ -60,7 +65,7 @@ pub fn op_for_note(note: &Note) -> Op {
         table: Table::Notes,
         id: note.id,
         data: serde_json::to_value(note).unwrap(),
-        updated_at: note.updated_at.clone(),
+        updated_at: note.updated_at,
     }
 }
 
@@ -70,7 +75,7 @@ pub fn op_for_delete(id: Uuid) -> Op {
         table: Table::Notes,
         id,
         data: serde_json::Value::Null,
-        updated_at: now_iso(),
+        updated_at: now_timestamp(),
     }
 }
 
@@ -85,8 +90,12 @@ impl FromRow for Note {
             title: str_field(row, "title")
                 .ok_or_else(|| RowError::MissingColumn("title".into()))?,
             body: str_field(row, "body").ok_or_else(|| RowError::MissingColumn("body".into()))?,
-            updated_at: str_field(row, "updated_at")
-                .ok_or_else(|| RowError::MissingColumn("updated_at".into()))?,
+            updated_at: Timestamp::parse(
+                str_field(row, "updated_at")
+                    .ok_or_else(|| RowError::MissingColumn("updated_at".into()))?
+                    .as_str(),
+            )
+            .map_err(|e| RowError::BadTimestamp("updated_at".into(), e))?,
         })
     }
 }
@@ -103,7 +112,7 @@ impl SyncRow for Note {
             self.id.to_string(),
             self.title.clone(),
             self.body.clone(),
-            self.updated_at.clone(),
+            self.updated_at.canonical_text(),
         ]
     }
 

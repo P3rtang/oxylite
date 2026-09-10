@@ -9,3 +9,7 @@ enum-iterator = "2"
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["serde", "v7", "js"] }
 serde_json = "1"
+# Parsing/canonicalizing only (no clock): `Utc::now` is platform-specific
+# (the client's clock is js_sys::Date), so the type parses what a
+# producer hands it — it never reads the clock itself.
+chrono = { version = "0.4", default-features = false, features = ["std"] }

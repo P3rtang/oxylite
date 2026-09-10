@@ -74,7 +74,7 @@ CREATE TABLE public.notes (
     id uuid NOT NULL,
     title text DEFAULT ''::text NOT NULL,
     body text DEFAULT ''::text NOT NULL,
-    updated_at text NOT NULL
+    updated_at timestamp with time zone NOT NULL
 );
 
 
@@ -136,7 +136,7 @@ CREATE TABLE public.sync_log (
     table_name text NOT NULL,
     row_id uuid NOT NULL,
     payload jsonb NOT NULL,
-    updated_at text NOT NULL
+    updated_at timestamp with time zone NOT NULL
 );
 
 
@@ -170,7 +170,7 @@ ALTER SEQUENCE public.sync_log_seq_seq OWNED BY public.sync_log.seq;
 CREATE TABLE public.tombstones (
     table_name text NOT NULL,
     id uuid NOT NULL,
-    deleted_at text NOT NULL
+    deleted_at timestamp with time zone NOT NULL
 );
 
 
@@ -201,6 +201,7 @@ COPY public._sqlx_migrations (version, description, installed_on, success, check
 4	snapshots	2026-01-01 00:00:00+00	t	\\x8883d52f517d4e909331f9c855f5786a12bc40f0b466b0fa45d890360267422038f18c75cf58e517406e66fb0916ac9e	0
 5	pending ops	2026-01-01 00:00:00+00	t	\\x9de44a7e6a968baec6d7798c6e4dd6f9e480d9af25cb06313ef26fb4bd0e555a0a8bed7c8f53db263adff11ad5516466	0
 6	tombstones	2026-01-01 00:00:00+00	t	\\x5639c90752e5ee743abc442db40a390677adeb5b3b27b4a14078e520644e8322fe37496231a63e1c24ed214e3f056c9d	0
+7	timestamptz	2026-01-01 00:00:00+00	t	\\xd7d7404cfeb2d222aae6e0ec9e8997565fe3eb619cb8cf75a3887119c94f2203f0cb6cdbcb78da5d52729816e881fdd0	0
 \.
 
 
@@ -217,9 +218,9 @@ COPY public.meta (key, value) FROM stdin;
 --
 
 COPY public.notes (id, title, body, updated_at) FROM stdin;
-01980000-0000-7000-8000-000000000001	seed: welcome	This note ships with the default database state (scripts/db-default.sql).	2026-01-01T00:00:01.000Z
-01980000-0000-7000-8000-000000000002	seed: offline-first	Writes land in local PGlite first, then sync over websocket with LWW.	2026-01-01T00:00:02.000Z
-01980000-0000-7000-8000-000000000003	seed: multi-tab	One engine per browser — subordinate tabs proxy to the leader.	2026-01-01T00:00:03.000Z
+01980000-0000-7000-8000-000000000001	seed: welcome	This note ships with the default database state (scripts/db-default.sql).	2026-01-01 00:00:01+00
+01980000-0000-7000-8000-000000000002	seed: offline-first	Writes land in local PGlite first, then sync over websocket with LWW.	2026-01-01 00:00:02+00
+01980000-0000-7000-8000-000000000003	seed: multi-tab	One engine per browser — subordinate tabs proxy to the leader.	2026-01-01 00:00:03+00
 \.
 
 
@@ -244,9 +245,9 @@ COPY public.snapshots (table_name, seq, created_at, data) FROM stdin;
 --
 
 COPY public.sync_log (seq, table_name, row_id, payload, updated_at) FROM stdin;
-1	notes	01980000-0000-7000-8000-000000000001	{"id": "01980000-0000-7000-8000-000000000001", "body": "This note ships with the default database state (scripts/db-default.sql).", "title": "seed: welcome", "updated_at": "2026-01-01T00:00:01.000Z"}	2026-01-01T00:00:01.000Z
-2	notes	01980000-0000-7000-8000-000000000002	{"id": "01980000-0000-7000-8000-000000000002", "body": "Writes land in local PGlite first, then sync over websocket with LWW.", "title": "seed: offline-first", "updated_at": "2026-01-01T00:00:02.000Z"}	2026-01-01T00:00:02.000Z
-3	notes	01980000-0000-7000-8000-000000000003	{"id": "01980000-0000-7000-8000-000000000003", "body": "One engine per browser — subordinate tabs proxy to the leader.", "title": "seed: multi-tab", "updated_at": "2026-01-01T00:00:03.000Z"}	2026-01-01T00:00:03.000Z
+1	notes	01980000-0000-7000-8000-000000000001	{"id": "01980000-0000-7000-8000-000000000001", "body": "This note ships with the default database state (scripts/db-default.sql).", "title": "seed: welcome", "updated_at": "2026-01-01T00:00:01+00:00"}	2026-01-01 00:00:01+00
+2	notes	01980000-0000-7000-8000-000000000002	{"id": "01980000-0000-7000-8000-000000000002", "body": "Writes land in local PGlite first, then sync over websocket with LWW.", "title": "seed: offline-first", "updated_at": "2026-01-01T00:00:02+00:00"}	2026-01-01 00:00:02+00
+3	notes	01980000-0000-7000-8000-000000000003	{"id": "01980000-0000-7000-8000-000000000003", "body": "One engine per browser — subordinate tabs proxy to the leader.", "title": "seed: multi-tab", "updated_at": "2026-01-01T00:00:03+00:00"}	2026-01-01 00:00:03+00
 \.
 
 

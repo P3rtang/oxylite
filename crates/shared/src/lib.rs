@@ -1,4 +1,7 @@
 pub mod delete;
+pub mod timestamp;
+
+pub use timestamp::{Timestamp, TimestampError};
 
 use enum_iterator::Sequence;
 use serde::{Deserialize, Serialize};
@@ -9,7 +12,7 @@ pub struct Note {
     pub id: Uuid,
     pub title: String,
     pub body: String,
-    pub updated_at: String, // ISO 8601
+    pub updated_at: Timestamp,
 }
 
 /// An operation the client pushes, or the server replays from sync_log.
@@ -18,7 +21,7 @@ pub struct Op {
     pub table: Table,
     pub id: Uuid,
     pub data: serde_json::Value,
-    pub updated_at: String,
+    pub updated_at: Timestamp,
 }
 
 /// Client -> server.
@@ -69,7 +72,7 @@ pub struct TableData {
 pub struct Tombstone {
     pub table: Table,
     pub id: Uuid,
-    pub deleted_at: String,
+    pub deleted_at: Timestamp,
 }
 
 /// Tables that participate in sync. Exhaustive on purpose: the compiler
@@ -123,5 +126,9 @@ pub static MIGRATIONS: &[(&str, &str)] = &[
     (
         "0006_tombstones",
         include_str!("../migrations/0006_tombstones.sql"),
+    ),
+    (
+        "0007_timestamptz",
+        include_str!("../migrations/0007_timestamptz.sql"),
     ),
 ];

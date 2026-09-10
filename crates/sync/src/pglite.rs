@@ -190,6 +190,18 @@ pub fn rows_of(result: &JsValue) -> Vec<js_sys::Object> {
 }
 
 /// Get a string column from a row object.
+/// A text field off a raw row. Timestamp columns are `timestamptz`
+/// (migration 0007), so PGlite hands those back as JS `Date` objects —
+/// normalized to the canonical ISO form here, once, at the read boundary
+/// (`Date.toISOString()` is exactly the protocol's canonical shape).
+/// Everything else must already be text.
 pub fn str_field(row: &js_sys::Object, key: &str) -> Option<String> {
-    js_sys::Reflect::get(row, &key.into()).ok()?.as_string()
+    let value = js_sys::Reflect::get(row, &key.into()).ok()?;
+    if value.as_string().is_some() {
+        return value.as_string();
+    }
+    if value.is_instance_of::<js_sys::Date>() {
+        return Some(js_sys::Date::from(value).to_iso_string().into());
+    }
+    None
 }

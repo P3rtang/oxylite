@@ -112,6 +112,41 @@ test("an offline delete propagates on reconnect", async ({ page, browser }) => {
   await ctx2.close();
 });
 
+test("a cold replay collapses create, delete, and a stale edit without resurrecting", async ({
+  browser,
+}) => {
+  // The batch collapse must replay the merge contract, not "last op in
+  // log order": create → delete → stale edit arriving in ONE pull window
+  // (a cold client's first pull) must land deleted-with-tombstone. The
+  // stale edit is later in the log but older in time — the collapse used
+  // to keep it and discard the delete's tombstone, resurrecting the row.
+  // Fixed timestamps keep this deterministic (no Date.now() dependence).
+  const title = `e2e cold collapse ${Date.now()}`;
+  const id = crypto.randomUUID();
+  const CREATE_AT = "2026-01-01T00:00:01.000Z";
+  const DELETE_AT = "2026-01-01T00:00:02.000Z";
+  const STALE_AT = "2026-01-01T00:00:00.000Z";
+  psql(
+    `INSERT INTO sync_log (table_name, row_id, payload, updated_at) VALUES` +
+      ` ('notes', '${id}', jsonb_build_object('id', '${id}', 'title', '${title}', 'body', '', 'updated_at', '${CREATE_AT}'), '${CREATE_AT}'),` +
+      // Deletes log the JSON null VALUE (the marker), not SQL NULL.
+      ` ('notes', '${id}', 'null'::jsonb, '${DELETE_AT}'),` +
+      ` ('notes', '${id}', jsonb_build_object('id', '${id}', 'title', '${title}', 'body', '', 'updated_at', '${STALE_AT}'), '${STALE_AT}');`,
+  );
+
+  // One cold client, one pull window covering all three ops.
+  const ctx = await browser.newContext();
+  const cold = await ctx.newPage();
+  await boot(cold);
+  await expect(cold.getByRole("listitem").filter({ hasText: "seed: welcome" })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(cold.getByRole("listitem").filter({ hasText: title })).toHaveCount(0, {
+    timeout: 10_000,
+  });
+  await ctx.close();
+});
+
 test("a stale edit cannot resurrect a deleted row", async ({ page }) => {
   await boot(page);
   await addNote(page, DELETED_NOTE);

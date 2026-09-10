@@ -17,6 +17,11 @@ pub enum RowError {
     /// A column's value didn't parse into the mapper's type.
     #[error("column {0:?} is not a valid uuid")]
     BadUuid(String),
+    /// A timestamp column held text that doesn't parse — typed so the
+    /// malformed value rides the error, and LWW text comparisons never
+    /// see it.
+    #[error("column {0:?}: {1}")]
+    BadTimestamp(String, shared::timestamp::TimestampError),
 }
 
 /// Row -> typed result, mirroring sqlx's `FromRow` so a shared type maps

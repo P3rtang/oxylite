@@ -170,17 +170,21 @@ pub async fn load_or_build_snapshot<T: SyncTable, S: SnapshotSource<T>>(
         sqlx::query!("SELECT table_name, id, deleted_at FROM tombstones ORDER BY table_name, id")
             .fetch_all(db)
             .await?;
-    let tombstones = tombstone_rows
-        .into_iter()
-        .filter_map(|row| {
-            let table = shared::Table::from_name(&row.table_name)?;
-            Some(shared::Tombstone {
-                table,
-                id: row.id,
-                deleted_at: row.deleted_at,
-            })
-        })
-        .collect();
+    let mut tombstones = Vec::with_capacity(tombstone_rows.len());
+    for row in tombstone_rows {
+        // Unknown table names (from a newer client) are skipped: this
+        // side is the compat boundary.
+        let Some(table) = shared::Table::from_name(&row.table_name) else {
+            continue;
+        };
+        // Infallible: the column is timestamptz, so the decode is a real
+        // DateTime — the storage layer did the validating.
+        tombstones.push(shared::Tombstone {
+            table,
+            id: row.id,
+            deleted_at: shared::Timestamp::from_datetime(row.deleted_at),
+        });
+    }
 
     Ok((seq, tables, tombstones))
 }

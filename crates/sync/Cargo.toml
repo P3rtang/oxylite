@@ -34,5 +34,6 @@ sqlx = { version = "0.8", optional = true, features = [
     "postgres",
     "uuid",
     "json",
+    "chrono",
 ] }
 enum-iterator = { version = "2", optional = true }

@@ -1,5 +1,3 @@
-mod sync;
-
 use axum::{
     Router,
     extract::{
@@ -10,6 +8,9 @@ use axum::{
     routing::get,
 };
 use shared::{ClientMsg, ServerMsg};
+// The binary is thin on purpose: routes + WS plumbing; the sync
+// machinery lives in the lib target (see crates/server/src/lib.rs).
+use server::sync;
 use std::time::Duration;
 use tokio::sync::mpsc;
 

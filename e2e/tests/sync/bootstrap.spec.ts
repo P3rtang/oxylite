@@ -70,15 +70,15 @@ test("cold client bulk-loads a snapshot instead of replaying row by row", async 
   // push() writes). With more than SNAPSHOT_AFTER_OPS=50 log entries, a
   // fresh client must be served the bulk snapshot, not 120 upsert replays.
   const stamp = `snapseed ${Date.now()}`;
-  // updated_at must stay canonical ISO (LWW compares it as text and the
-  // UI renders it raw). No embedded double quotes in the to_char format:
-  // the SQL goes through bash (-c "${sql}"), which would strip them and
-  // corrupt the format into literal "THH24" text (observed in the wild).
+  // The to_char expression builds canonical ISO text (`…Z`), but it is a
+  // TYPED text expression — timestamptz columns (migration 0007) reject
+  // it without an explicit cast (string literals coerce, expressions
+  // don't). The storage layer doing the validating is the point.
   const sql =
     `INSERT INTO notes (id, title, body, updated_at)` +
     ` SELECT gen_random_uuid(), '${stamp} ' || g, '',` +
-    ` to_char(now() - (g || ' seconds')::interval, 'YYYY-MM-DD') || 'T' ||` +
-    ` to_char(now() - (g || ' seconds')::interval, 'HH24:MI:SS.MS') || 'Z'` +
+    ` (to_char(now() - (g || ' seconds')::interval, 'YYYY-MM-DD') || 'T' ||` +
+    ` to_char(now() - (g || ' seconds')::interval, 'HH24:MI:SS.MS') || 'Z')::timestamptz` +
     ` FROM generate_series(1, 120) g;` +
     ` INSERT INTO sync_log (table_name, row_id, payload, updated_at)` +
     ` SELECT 'notes', id, jsonb_build_object('id', id, 'title', title, 'body', body, 'updated_at', updated_at), updated_at` +
