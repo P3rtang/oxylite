@@ -200,14 +200,15 @@ pub fn init(migrations: &'static [(&'static str, &'static str)]) {
     ENGINE.with_borrow_mut(|slot| *slot = Some(singleton));
 }
 
-/// App-provided sink for one table's rows: writes that table's payload
-/// rows (Events payloads or a Snapshot) into the local DB. The app owns
-/// the mapping (it names its row types); the engine just sinks rows into
-/// it — the dynamic-dispatch boundary of this library.
+/// App-provided sink for one table's ops: applies that table's events (or
+/// a Snapshot's rows, synthesized as upsert ops) into the local DB —
+/// including deletes (`data: null`). The app owns the mapping (it names
+/// its row types); the engine just sinks ops into it — the
+/// dynamic-dispatch boundary of this library.
 pub type RowSink = Rc<
     dyn for<'a> Fn(
         &'a Pglite,
-        &'a [serde_json::Value],
+        &'a [Op],
     )
         -> std::pin::Pin<Box<dyn Future<Output = Result<Vec<Uuid>, EngineError>> + 'a>>,
 >;
@@ -230,11 +231,11 @@ impl Engine {
         &self,
         db: &Pglite,
         table: Table,
-        rows: &[serde_json::Value],
+        ops: &[Op],
     ) -> Result<Vec<Uuid>, EngineError> {
         let sink = self.sinks.borrow().get(&table).cloned();
         match sink {
-            Some(f) => (f)(db, rows).await,
+            Some(f) => (f)(db, ops).await,
             None => Err(EngineError::NoSink(table)),
         }
     }
@@ -837,12 +838,12 @@ impl Engine {
                 }
                 let mut touched = Vec::with_capacity(events.len());
                 for table in unique {
-                    let rows: Vec<serde_json::Value> = events
+                    let ops: Vec<Op> = events
                         .iter()
                         .filter(|o| o.table == table)
-                        .map(|o| o.data.clone())
+                        .cloned()
                         .collect();
-                    match self.apply_batch(db, table, &rows).await {
+                    match self.apply_batch(db, table, &ops).await {
                         Ok(ids) => touched.extend(ids.into_iter().map(|id| (table, id))),
                         Err(e) => {
                             log("sync", &format!("apply failed: {e}"));
@@ -861,15 +862,42 @@ impl Engine {
                     self.send(&ClientMsg::Pull { since: c });
                 }
             }
-            ServerMsg::Snapshot { seq, tables } => {
+            ServerMsg::Snapshot {
+                seq,
+                tables,
+                tombstones,
+            } => {
                 let rows_count: usize = tables.iter().map(|t| t.rows.len()).sum();
-                log("sync", &format!("snapshot at {seq}: {rows_count} rows"));
+                log(
+                    "sync",
+                    &format!(
+                        "snapshot at {seq}: {rows_count} rows + {} tombstones",
+                        tombstones.len()
+                    ),
+                );
+                // Tombstones go first: the guarded upserts below consult
+                // them, and a pending offline delete must outlive a
+                // snapshot that predates it (upserts never regress).
+                if let Err(e) = crate::query::apply_tombstones(db, &tombstones).await {
+                    log("sync", &format!("snapshot tombstones apply failed: {e}"));
+                }
                 let mut touched = Vec::with_capacity(rows_count);
                 for table_data in &tables {
-                    match self
-                        .apply_batch(db, table_data.table, &table_data.rows)
-                        .await
-                    {
+                    // Snapshot rows are payload-shaped live rows: upserts
+                    // by construction (deleted rows are excluded
+                    // server-side). `id`/`updated_at` are read from the
+                    // payload by the sink's row parsing.
+                    let ops: Vec<Op> = table_data
+                        .rows
+                        .iter()
+                        .map(|row| Op {
+                            table: table_data.table,
+                            id: Uuid::nil(),
+                            data: row.clone(),
+                            updated_at: String::new(),
+                        })
+                        .collect();
+                    match self.apply_batch(db, table_data.table, &ops).await {
                         Ok(ids) => {
                             touched.extend(ids.into_iter().map(|id| (table_data.table, id)));
                         }

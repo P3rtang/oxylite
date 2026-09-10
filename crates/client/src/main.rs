@@ -6,7 +6,7 @@ mod notes;
 mod notify;
 
 use dioxus::prelude::*;
-use notes::{Note, display_time, new_note, notes_sink, op_for_note};
+use notes::{Note, display_time, new_note, notes_sink, op_for_delete, op_for_note};
 use notify::{Notice, NoticeOverlay, notify};
 use shared::Table;
 use sync::engine::{self, EngineError, engine};
@@ -26,6 +26,7 @@ fn App() -> Element {
     // here instead of a silently empty list.
     let result = use_select_all::<Note>();
     let notes_state = result.read().clone();
+    let notes = notes_state.clone().unwrap_or_default();
     let status = engine::STATUS.read().clone();
     let mut title_input = use_signal(String::new);
 
@@ -78,10 +79,16 @@ fn App() -> Element {
                 p { style: "color:#b00", "load failed: {e}" }
             }
             ul { style: "margin-top: 1rem; line-height: 1.8",
-                for note in notes_state.as_ref().unwrap_or(&Vec::new()).iter() {
+                for note in notes {
                     li { key: "{note.id}",
                         strong { "{note.title}" }
                         span { style: "color:#999", " · {display_time(&note.updated_at)}" }
+                        button {
+                            style: "margin-left: 8px; padding: 0 6px; cursor: pointer",
+                            title: "Delete note",
+                            onclick: move |_| delete_note(note.id),
+                            "✕"
+                        }
                     }
                 }
             }
@@ -116,5 +123,27 @@ fn submit(mut title_input: Signal<String>) {
             notify(Notice::new("Write failed", err.to_string()));
         }
         e.push(op_for_note(&note)).await;
+    });
+}
+
+/// Remove the note locally (real delete — the row is gone; the guarded
+/// statement tombstones exactly what it removed), then push the delete op
+/// (or queue it while offline). Same path a remote delete event takes on
+/// the receiving side.
+fn delete_note(id: uuid::Uuid) {
+    spawn(async move {
+        let e = engine();
+        let op = op_for_delete(id);
+        if let Err(err) = e
+            .exec(
+                &Note::delete_sql(1),
+                &[id.to_string(), op.updated_at.clone()],
+                &[(Note::TABLE, id)],
+            )
+            .await
+        {
+            notify(Notice::new("Delete failed", err.to_string()));
+        }
+        e.push(op).await;
     });
 }

@@ -115,11 +115,16 @@ pub async fn rebuild_snapshots<T: SyncTable, S: SnapshotSource<T>>(
 
 /// Full state for a far-behind client. Serves the stored snapshot when it
 /// is fresh enough (young enough, close enough to the log head), else
-/// rebuilds it first.
+/// rebuilds it first. Tombstones ride along: a client that snapshots past
+/// a delete never replays that delete op, so without them it would
+/// resurrect the row on the next stale replay. The tombstones query is
+/// lib-owned (the table is generic), read after the snapshot rows — a
+/// delete committing in between is still safe: the row is simply absent
+/// from the snapshot, and the tombstone only makes that fact explicit.
 pub async fn load_or_build_snapshot<T: SyncTable, S: SnapshotSource<T>>(
     db: &PgPool,
     source: &S,
-) -> Result<(i64, Vec<TableRows<T>>), sqlx::Error> {
+) -> Result<(i64, Vec<TableRows<T>>, Vec<shared::Tombstone>), sqlx::Error> {
     let head = current_cursor(db).await;
 
     let stored = sqlx::query!(
@@ -157,5 +162,25 @@ pub async fn load_or_build_snapshot<T: SyncTable, S: SnapshotSource<T>>(
         })
         .collect();
 
-    Ok((seq, tables))
+    // Tombstones are the lib's own table, mapped onto the workspace's wire
+    // table type (the lib is coupled to `shared` for the wire DTOs).
+    // Unknown table names (from a newer client) are skipped: this side is
+    // the compat boundary.
+    let tombstone_rows =
+        sqlx::query!("SELECT table_name, id, deleted_at FROM tombstones ORDER BY table_name, id")
+            .fetch_all(db)
+            .await?;
+    let tombstones = tombstone_rows
+        .into_iter()
+        .filter_map(|row| {
+            let table = shared::Table::from_name(&row.table_name)?;
+            Some(shared::Tombstone {
+                table,
+                id: row.id,
+                deleted_at: row.deleted_at,
+            })
+        })
+        .collect();
+
+    Ok((seq, tables, tombstones))
 }

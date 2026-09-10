@@ -116,7 +116,9 @@ async fn handle_socket(mut socket: WebSocket, db: sqlx::PgPool) {
                                 if head - since > sync::SNAPSHOT_AFTER_OPS && !snapshotted {
                                     snapshotted = true;
                                     match sync::load_or_build_snapshot(&db).await {
-                                        Ok((seq, tables)) => ServerMsg::Snapshot { seq, tables },
+                                        Ok((seq, tables, tombstones)) => {
+                                            ServerMsg::Snapshot { seq, tables, tombstones }
+                                        }
                                         Err(e) => {
                                             eprintln!("snapshot error: {e}");
                                             continue;

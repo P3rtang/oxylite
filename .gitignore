@@ -6,3 +6,4 @@
 /.logs
 # session planning/design notes, untracked by convention
 /docs/
+.env

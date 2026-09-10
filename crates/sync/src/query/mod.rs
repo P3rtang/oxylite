@@ -29,4 +29,4 @@ pub use sub::SubscriptionGuard;
 pub use sync_row::SyncRow;
 
 pub(crate) use sub::{Subscription, SubscriptionId};
-pub use sync_row::bulk_upsert;
+pub use sync_row::{apply_ops, apply_tombstones};

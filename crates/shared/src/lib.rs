@@ -1,3 +1,5 @@
+pub mod delete;
+
 use enum_iterator::Sequence;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -43,8 +45,13 @@ pub enum ServerMsg {
     /// Full table state at `seq`, replacing per-op replay for clients that
     /// are too far behind for replay to be cheap (fresh IndexedDB, or a
     /// long offline stretch). Applied with bulk upserts; rows use the same
-    /// payload shape as `Op.data`.
-    Snapshot { seq: i64, tables: Vec<TableData> },
+    /// payload shape as `Op.data`. Tombstones ride along so deletions
+    /// behind the client's cursor are not lost (see `Tombstone`).
+    Snapshot {
+        seq: i64,
+        tables: Vec<TableData>,
+        tombstones: Vec<Tombstone>,
+    },
 }
 
 /// One table's snapshot: every live row, payload-shaped.
@@ -52,6 +59,17 @@ pub enum ServerMsg {
 pub struct TableData {
     pub table: Table,
     pub rows: Vec<serde_json::Value>,
+}
+
+/// A recorded deletion, riding the Snapshot: a far-behind client never
+/// replays the delete op (its backlog starts after it), so tombstones
+/// must ship with the snapshot or the row would resurrect on the next
+/// stale replay. Lib-owned and generic — deleted rows carry no data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tombstone {
+    pub table: Table,
+    pub id: Uuid,
+    pub deleted_at: String,
 }
 
 /// Tables that participate in sync. Exhaustive on purpose: the compiler
@@ -101,5 +119,9 @@ pub static MIGRATIONS: &[(&str, &str)] = &[
     (
         "0005_pending_ops",
         include_str!("../migrations/0005_pending_ops.sql"),
+    ),
+    (
+        "0006_tombstones",
+        include_str!("../migrations/0006_tombstones.sql"),
     ),
 ];

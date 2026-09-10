@@ -14,8 +14,8 @@ test("apply failures surface in the notice overlay", async ({ page }) => {
   // (no snapshot rebuild can swallow it).
   execSync(
     `podman compose exec -T postgres psql -U sync -d offline_notes -c ` +
-      `"INSERT INTO sync_log (table_name, row_id, payload) ` +
-      `VALUES ('notes', gen_random_uuid(), '{}'::jsonb);"`,
+      `"INSERT INTO sync_log (table_name, row_id, payload, updated_at) ` +
+      `VALUES ('notes', gen_random_uuid(), '{}'::jsonb, '');"`,
     { cwd: ".." }, // playwright runs from e2e/; compose file is at the repo root
   );
 

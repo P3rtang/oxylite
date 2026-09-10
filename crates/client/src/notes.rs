@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use shared::{Op, Table};
 use sync::engine::RowSink;
 use sync::pglite::{Pglite, str_field};
-use sync::query::{FromRow, Row, RowError, SyncRow, bulk_upsert};
+use sync::query::{FromRow, Row, RowError, SyncRow, apply_ops};
 use uuid::Uuid;
 
 /// The client's note row. Defined app-side (not in `shared`) because the
@@ -23,11 +23,11 @@ pub struct Note {
     pub updated_at: String, // ISO 8601
 }
 
-/// The engine sinks `Table::Notes` payloads here (Events and Snapshots).
-/// Registered in main at startup — ownership requires the mapping to
-/// live app-side, since it names `Note`.
+/// The engine sinks `Table::Notes` ops here (Events and Snapshots,
+/// deletes included). Registered in main at startup — ownership requires
+/// the mapping to live app-side, since it names `Note`.
 pub fn notes_sink() -> RowSink {
-    Rc::new(|db: &Pglite, rows: &[serde_json::Value]| Box::pin(bulk_upsert::<Note>(db, rows)))
+    Rc::new(|db: &Pglite, ops: &[Op]| Box::pin(apply_ops::<Note>(db, ops)))
 }
 
 pub fn new_note(title: &str) -> Note {
@@ -61,6 +61,16 @@ pub fn op_for_note(note: &Note) -> Op {
         id: note.id,
         data: serde_json::to_value(note).unwrap(),
         updated_at: note.updated_at.clone(),
+    }
+}
+
+/// A delete is an op like any other: the null payload is the marker.
+pub fn op_for_delete(id: Uuid) -> Op {
+    Op {
+        table: Table::Notes,
+        id,
+        data: serde_json::Value::Null,
+        updated_at: now_iso(),
     }
 }
 

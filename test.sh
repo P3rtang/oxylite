@@ -6,6 +6,8 @@
 #   ./test.sh --full      # lint + e2e
 #   --fresh               # (with e2e/full) rebuild the default state from
 #                         # migrations + seed, refreshing the committed dump
+#   [args…]               # anything else passes through to playwright
+#                         # (spec paths, --grep "…", --trace on; e2e only)
 #
 # Everything runs from a clean state: --e2e kills any server on :3000 and
 # rebuilds the dist via dx (the stale-wasm class of bug lives in forgetting
@@ -16,6 +18,7 @@ source "$(dirname "$0")/scripts/common.sh"
 
 mode=""
 fresh=false
+rest=()
 
 for arg in "$@"; do
     case "$arg" in
@@ -23,11 +26,7 @@ for arg in "$@"; do
         --e2e) mode="${mode:+$mode }e2e" ;;
         --full) mode="lint e2e" ;;
         --fresh) fresh=true ;;
-        *)
-            red "unknown flag: $arg"
-            echo "usage: ./test.sh [--lint] [--e2e] [--full] [--fresh]"
-            exit 1
-            ;;
+        *) rest+=("$arg") ;;
     esac
 done
 
@@ -80,7 +79,7 @@ e2e() {
     # command and serve-server.sh both build before starting, so a reused
     # server always postdates its dist build.
     blue "playwright suite…"
-    "$ROOT/scripts/e2e.sh"
+    "$ROOT/scripts/e2e.sh" ${rest[@]+"${rest[@]}"}
     green "e2e: passed"
 }
 

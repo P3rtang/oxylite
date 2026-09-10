@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT seq, table_name, row_id, payload\n         FROM sync_log WHERE seq > $1 ORDER BY seq LIMIT 1000",
+  "query": "SELECT seq, table_name, row_id, payload, updated_at\n         FROM sync_log WHERE seq > $1 ORDER BY seq LIMIT 1000",
   "describe": {
     "columns": [
       {
@@ -22,6 +22,11 @@
         "ordinal": 3,
         "name": "payload",
         "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_at",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -33,8 +38,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "043a7ceded2f231d275e0bf6777940c3174acbb0104b0ce43dd061a984a5f857"
+  "hash": "c3bf89417627ecd014918f223f5f98ab606a3a8809d24190838d0c8b3c926d53"
 }

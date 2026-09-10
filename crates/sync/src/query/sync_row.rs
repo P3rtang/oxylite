@@ -4,7 +4,7 @@
 use crate::engine::EngineError;
 use crate::pglite::Pglite;
 use dioxus::prelude::WritableExt;
-use shared::Table;
+use shared::{Op, Table, Tombstone};
 use uuid::Uuid;
 
 use super::from_row::FromRow;
@@ -26,7 +26,10 @@ pub trait SyncRow: FromRow + Sized {
     /// Column names in bind order — feeds every generated statement.
     const COLUMNS: &'static [&'static str];
     /// Column compared for last-write-wins (`EXCLUDED.c > t.c`); `None`
-    /// means batch order decides.
+    /// means batch order decides. Deletion needs this axis too: the
+    /// tombstone guard compares a write's timestamp against the row's
+    /// `deleted_at`, so LWW-less tables get plain upserts and deletes
+    /// without a tombstone.
     const LWW: Option<&'static str> = None;
     /// Primary key column name.
     const PK: &'static str = "id";
@@ -98,48 +101,222 @@ pub trait SyncRow: FromRow + Sized {
         }
         sql
     }
+
+    /// The guarded form of [`Self::upsert_sql`]: rows whose tombstone is
+    /// newer-or-equal are filtered out before they can insert — the
+    /// `ON CONFLICT` LWW guard cannot catch an absent row (no conflict =
+    /// plain INSERT), so without this a stale edit pushed by a client that
+    /// was offline before the delete would resurrect the row. Requires
+    /// `LWW` (a delete needs a timestamp axis to lose against); falls
+    /// back to the plain upsert otherwise.
+    fn guarded_upsert_sql(n_rows: usize) -> String {
+        let Some(lww) = Self::LWW else {
+            return Self::upsert_sql(n_rows);
+        };
+        let cols = Self::COLUMNS;
+        let n_cols = cols.len();
+        let mut sql = format!(
+            "INSERT INTO {} ({}) SELECT {} FROM (VALUES ",
+            Self::TABLE.as_str(),
+            cols.join(", "),
+            cols.iter()
+                .map(|c| format!("r.{c}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        for r in 0..n_rows {
+            if r > 0 {
+                sql.push_str(", ");
+            }
+            // Consumed through the `r` alias (no target-column context to
+            // pin types), so cast explicitly: pk is uuid, columns are text.
+            let slots: Vec<String> = (1..=n_cols)
+                .map(|c| {
+                    let i = r * n_cols + c;
+                    if cols[c - 1] == Self::PK {
+                        format!("${i}::uuid")
+                    } else {
+                        format!("${i}::text")
+                    }
+                })
+                .collect();
+            sql.push_str(&format!("({})", slots.join(", ")));
+        }
+        sql.push_str(&format!(") AS r({})", cols.join(", ")));
+        sql.push_str(&format!(
+            " WHERE NOT EXISTS (SELECT 1 FROM tombstones tb \
+             WHERE tb.table_name = '{}' AND tb.id = r.{} AND tb.deleted_at >= r.{lww})",
+            Self::TABLE.as_str(),
+            Self::PK
+        ));
+        sql.push_str(&format!(" ON CONFLICT ({}) DO UPDATE SET ", Self::PK));
+        let sets: Vec<String> = cols
+            .iter()
+            .filter(|c| **c != Self::PK)
+            .map(|c| format!("{c} = EXCLUDED.{c}"))
+            .collect();
+        sql.push_str(&sets.join(", "));
+        sql.push_str(&format!(
+            " WHERE EXCLUDED.{lww} > {}.{}",
+            Self::TABLE.as_str(),
+            lww
+        ));
+        sql
+    }
+
+    /// Clear tombstones that a strictly newer write resurrects: one
+    /// `(pk, lww)` pair per row, bound after the upsert's own params.
+    /// Rows the upsert's LWW guard rejected keep backstop semantics either
+    /// way (the row is newer than any tombstone such a write could clear).
+    fn tombstone_clear_sql(n_rows: usize) -> String {
+        format!(
+            "DELETE FROM tombstones t USING (VALUES {}) AS w(id, at) \
+             WHERE t.table_name = '{}' AND t.id = w.id AND t.deleted_at < w.at",
+            (0..n_rows)
+                .map(|r| format!("(${}::uuid, ${}::text)", r * 2 + 1, r * 2 + 2))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Self::TABLE.as_str(),
+        )
+    }
+
+    /// Delete `n` rows and tombstone only the ones actually removed, in
+    /// one statement. The LWW guard (`t.{lww} < w.at`) makes a replayed
+    /// or older delete lose to a newer resurrected row — no removal, and
+    /// the `gone` CTE gates the tombstone so a resurrection is never
+    /// re-tombstoned by a stale replay. Params row-major `(pk,
+    /// deleted_at)`. LWW-less tables fall back to a plain batch delete
+    /// (batch order decides, no tombstone axis).
+    fn delete_sql(n_rows: usize) -> String {
+        let pk = Self::PK;
+        let values = |casts: bool| {
+            (0..n_rows)
+                .map(|r| {
+                    let (i, a) = (r * 2 + 1, r * 2 + 2);
+                    if casts {
+                        format!("(${i}::uuid, ${a}::text)")
+                    } else {
+                        format!("(${i}, ${a})")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match Self::LWW {
+            Some(lww) => format!(
+                "WITH gone AS ( \
+                   DELETE FROM {table} AS t USING (VALUES {vals}) AS w(id, at) \
+                   WHERE t.{pk} = w.id AND t.{lww} < w.at RETURNING t.{pk} \
+                 ) \
+                 INSERT INTO tombstones (table_name, id, deleted_at) \
+                 SELECT '{table}', w.id, w.at FROM (VALUES {vals}) AS w(id, at) \
+                 WHERE w.{pk} IN (SELECT {pk} FROM gone) \
+                 ON CONFLICT (table_name, id) DO UPDATE \
+                   SET deleted_at = EXCLUDED.deleted_at \
+                 WHERE EXCLUDED.deleted_at > tombstones.deleted_at",
+                table = Self::TABLE.as_str(),
+                pk = pk,
+                lww = lww,
+                vals = values(true),
+            ),
+            None => format!(
+                "DELETE FROM {} WHERE {} IN ({})",
+                Self::TABLE.as_str(),
+                pk,
+                (1..=n_rows)
+                    .map(|i| format!("${i}::uuid"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
 }
 
-/// Apply a batch of payload rows (Events or a Snapshot): parse, dedup to
-/// the last row per PK (log order is the LWW tiebreak), then one multi-row
-/// upsert per chunk. A fresh IndexedDB must not pay one round-trip per row.
+/// The final state of one pk after a batch: its newest op, as row data
+/// (upsert) or a deletion timestamp.
+enum FinalRow<T> {
+    Upsert(T),
+    Delete(String),
+}
+
+/// Apply a batch of ops (Events, or Snapshot rows synthesized as upserts).
+/// Ops collapse to the last per pk (log order is the tiebreak); tombstone
+/// guard and row LWW decide the rest — deletes apply first, so a stale
+/// upsert replayed later in the same batch meets its tombstone.
 ///
-/// Unparseable payloads are skipped individually — they have no valid
+/// Unparseable upserts are skipped individually — they have no valid
 /// content to apply, and failing the whole chunk would drop every good
 /// row around them (one poison row in a backlog used to erase a thousand
 /// events). Skips are surfaced on `LAST_ERROR`, not swallowed.
-pub async fn bulk_upsert<T>(
-    db: &Pglite,
-    rows: &[serde_json::Value],
-) -> Result<Vec<Uuid>, EngineError>
+pub async fn apply_ops<T>(db: &Pglite, ops: &[Op]) -> Result<Vec<Uuid>, EngineError>
 where
     T: SyncRow + serde::de::DeserializeOwned,
 {
-    let mut order: Vec<Uuid> = Vec::with_capacity(rows.len());
-    let mut by_pk: std::collections::HashMap<Uuid, T> =
-        std::collections::HashMap::with_capacity(rows.len());
+    let mut order: Vec<Uuid> = Vec::with_capacity(ops.len());
+    let mut last: std::collections::HashMap<Uuid, FinalRow<T>> =
+        std::collections::HashMap::with_capacity(ops.len());
     let mut skipped: Vec<String> = Vec::new();
-    for v in rows {
-        match serde_json::from_value::<T>(v.clone()) {
-            Ok(row) => {
-                if !by_pk.contains_key(&row.pk()) {
-                    order.push(row.pk());
+    for op in ops {
+        match op.kind() {
+            shared::delete::OpKind::Delete => {
+                if !last.contains_key(&op.id) {
+                    order.push(op.id);
                 }
-                // Same PK twice in one batch: the later log entry wins.
-                by_pk.insert(row.pk(), row);
+                last.insert(op.id, FinalRow::Delete(op.updated_at.clone()));
             }
-            Err(e) => skipped.push(e.to_string()),
+            shared::delete::OpKind::Upsert => {
+                match serde_json::from_value::<T>(op.data.clone()) {
+                    Ok(row) => {
+                        if !last.contains_key(&row.pk()) {
+                            order.push(row.pk());
+                        }
+                        // Same pk twice in one batch: the later log entry wins.
+                        last.insert(row.pk(), FinalRow::Upsert(row));
+                    }
+                    Err(e) => skipped.push(e.to_string()),
+                }
+            }
         }
     }
 
-    // Stay well under PGlite's host-parameter limit.
-    let chunk_size = (4000 / T::COLUMNS.len()).max(1);
-    let items: Vec<T> = order.iter().map(|pk| by_pk.remove(pk).unwrap()).collect();
-    for chunk in items.chunks(chunk_size) {
-        let params: Vec<String> = chunk.iter().flat_map(|r| r.params().into_iter()).collect();
-        db.query(&T::upsert_sql(chunk.len()), &params)
+    let mut deletes: Vec<(Uuid, String)> = Vec::new();
+    let mut upserts: Vec<T> = Vec::new();
+    for id in &order {
+        match last.remove(id) {
+            Some(FinalRow::Upsert(row)) => upserts.push(row),
+            Some(FinalRow::Delete(at)) => deletes.push((*id, at)),
+            None => unreachable!("order only holds pks present in `last`"),
+        }
+    }
+
+    // Stay well under PGlite's host-parameter limit (the densest statement
+    // here binds 2 params per row).
+    let chunk_size = 4000 / 2;
+    for chunk in deletes.chunks(chunk_size) {
+        let params: Vec<String> = chunk
+            .iter()
+            .flat_map(|(id, at)| [id.to_string(), at.clone()])
+            .collect();
+        db.query(&T::delete_sql(chunk.len()), &params)
             .await
             .map_err(EngineError::from)?;
+    }
+
+    let n_cols = T::COLUMNS.len();
+    for chunk in upserts.chunks((4000 / n_cols).max(1)) {
+        let params: Vec<String> = chunk.iter().flat_map(|r| r.params().into_iter()).collect();
+        db.query(&T::guarded_upsert_sql(chunk.len()), &params)
+            .await
+            .map_err(EngineError::from)?;
+        if T::LWW.is_some() {
+            let pairs: Vec<String> = chunk
+                .iter()
+                .flat_map(|r| vec![r.pk().to_string(), lww_value(r)])
+                .collect();
+            db.query(&T::tombstone_clear_sql(chunk.len()), &pairs)
+                .await
+                .map_err(EngineError::from)?;
+        }
     }
 
     if !skipped.is_empty() {
@@ -151,4 +328,156 @@ where
     }
 
     Ok(order)
+}
+
+/// The LWW column's bind value (the tombstone clear compares against it).
+fn lww_value<T: SyncRow>(row: &T) -> String {
+    let idx = T::COLUMNS
+        .iter()
+        .position(|c| Some(*c) == T::LWW)
+        .unwrap_or(0);
+    row.params()[idx].clone()
+}
+
+/// Apply snapshot tombstones: upsert each one, never regressing a newer
+/// local tombstone (a pending offline delete must outlive the snapshot
+/// that predates it).
+pub async fn apply_tombstones(db: &Pglite, tombstones: &[Tombstone]) -> Result<(), EngineError> {
+    // Group by table so the SQL can quote the name (same statement shape
+    // as SyncRow::tombstone_upsert_sql, but the table comes from the row).
+    let mut by_table: std::collections::HashMap<Table, Vec<&Tombstone>> =
+        std::collections::HashMap::new();
+    for t in tombstones {
+        by_table.entry(t.table).or_default().push(t);
+    }
+    for (table, rows) in by_table {
+        for chunk in rows.chunks(2000) {
+            let mut sql =
+                String::from("INSERT INTO tombstones (table_name, id, deleted_at) VALUES ");
+            sql.push_str(
+                &chunk
+                    .iter()
+                    .enumerate()
+                    .map(|(r, _)| format!("('{}', ${}, ${})", table.as_str(), r * 2 + 1, r * 2 + 2))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            sql.push_str(
+                " ON CONFLICT (table_name, id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at \
+                 WHERE EXCLUDED.deleted_at > tombstones.deleted_at",
+            );
+            let params: Vec<String> = chunk
+                .iter()
+                .flat_map(|t| [t.id.to_string(), t.deleted_at.clone()])
+                .collect();
+            db.query(&sql, &params).await.map_err(EngineError::from)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query::from_row::{Row, RowError};
+
+    // The generated statements are the untested surface between the
+    // engine and PGlite (unit tests can't execute them host-side), so
+    // their SHAPE is pinned here — a malformed statement (the
+    // double-`r.` alias that once shipped) only surfaces as a runtime
+    // 42P01 on the client, never at compile time.
+    struct TestNote {
+        id: Uuid,
+        title: String,
+        updated_at: String,
+    }
+
+    impl FromRow for TestNote {
+        fn from_row(_row: &Row) -> Result<Self, RowError> {
+            Err(RowError::MissingColumn("test-only".into()))
+        }
+    }
+
+    impl SyncRow for TestNote {
+        const TABLE: Table = Table::Notes;
+        const COLUMNS: &'static [&'static str] = &["id", "title", "updated_at"];
+        const LWW: Option<&'static str> = Some("updated_at");
+
+        fn params(&self) -> Vec<String> {
+            vec![
+                self.id.to_string(),
+                self.title.clone(),
+                self.updated_at.clone(),
+            ]
+        }
+
+        fn pk(&self) -> Uuid {
+            self.id
+        }
+    }
+
+    #[test]
+    fn guarded_upsert_selects_aliased_columns_once() {
+        let sql = TestNote::guarded_upsert_sql(2);
+        // Every column is prefixed exactly once: `r.<col>`, never `r.r.`.
+        assert!(
+            sql.contains(
+                "INSERT INTO notes (id, title, updated_at) \
+                 SELECT r.id, r.title, r.updated_at FROM (VALUES "
+            ),
+            "bad select list: {sql}"
+        );
+        assert!(sql.contains(") AS r(id, title, updated_at)"));
+        assert!(sql.contains("WHERE NOT EXISTS (SELECT 1 FROM tombstones tb"));
+        assert!(sql.contains("tb.id = r.id AND tb.deleted_at >= r.updated_at"));
+        assert!(sql.contains("WHERE EXCLUDED.updated_at > notes.updated_at"));
+        assert!(!sql.contains("r.r."), "double alias prefix: {sql}");
+        // PK cast to uuid, the rest to text, row-major params.
+        assert!(sql.contains("($1::uuid, $2::text, $3::text)"));
+        assert!(sql.contains("($4::uuid, $5::text, $6::text)"));
+    }
+
+    #[test]
+    fn tombstone_clear_binds_pk_and_lww_pairs() {
+        let sql = TestNote::tombstone_clear_sql(2);
+        assert!(sql.starts_with("DELETE FROM tombstones t USING (VALUES "));
+        assert!(sql.contains("($1::uuid, $2::text), ($3::uuid, $4::text)"));
+        assert!(sql.contains("t.id = w.id AND t.deleted_at < w.at"));
+    }
+
+    #[test]
+    fn delete_sql_tombstones_only_what_it_removed() {
+        let sql = TestNote::delete_sql(1);
+        assert!(sql.starts_with("WITH gone AS ("));
+        assert!(
+            sql.contains("DELETE FROM notes AS t USING (VALUES ($1::uuid, $2::text)) AS w(id, at)")
+        );
+        assert!(sql.contains("WHERE t.id = w.id AND t.updated_at < w.at RETURNING t.id"));
+        assert!(sql.contains("WHERE w.id IN (SELECT id FROM gone)"));
+        assert!(sql.contains("ON CONFLICT (table_name, id) DO UPDATE"));
+        assert!(sql.contains("WHERE EXCLUDED.deleted_at > tombstones.deleted_at"));
+    }
+
+    #[test]
+    fn delete_sql_without_lww_has_no_tombstone() {
+        struct Plain;
+        impl FromRow for Plain {
+            fn from_row(_row: &Row) -> Result<Self, RowError> {
+                Err(RowError::MissingColumn("test-only".into()))
+            }
+        }
+        impl SyncRow for Plain {
+            const TABLE: Table = Table::Notes;
+            const COLUMNS: &'static [&'static str] = &["id", "title"];
+            fn params(&self) -> Vec<String> {
+                unimplemented!()
+            }
+            fn pk(&self) -> Uuid {
+                unimplemented!()
+            }
+        }
+        let sql = Plain::delete_sql(2);
+        assert!(sql.starts_with("DELETE FROM notes WHERE id IN ($1::uuid, $2::uuid)"));
+        assert!(!sql.contains("tombstones"));
+    }
 }
