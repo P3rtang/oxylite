@@ -86,6 +86,86 @@ test("a push accepted by a socket the server never saw must still sync", async (
   await ctxB.close();
 });
 
+test("a lost ack resends the batch — the server applies it twice and converges", async ({
+  page,
+}) => {
+  // The Ack is itself lossy: the server can apply a push, log it, and
+  // have the socket die before the Ack lands. The pending row then
+  // survives and the next connect RESENDS it — the server must absorb
+  // the duplicate (guarded upsert is a no-op against the identical
+  // row; the log records both arrivals, the wire history) while every
+  // client still converges to exactly one row.
+  //
+  // Deterministic by construction: registering onMessage on the
+  // SERVER-side route stops Playwright's auto-forwarding in that
+  // direction, so the page→server Push is relayed untouched (applied,
+  // logged) while every Ack is swallowed — the client never retires
+  // the batch. A reload then forces the reconnect that resends it.
+  const stamp = `e2e lost-ack ${Date.now()}`;
+
+  await page.goto("/");
+  await waitConnected(page);
+
+  await page.routeWebSocket("**/sync", (ws) => {
+    const server = ws.connectToServer();
+    server.onMessage((msg) => {
+      if (typeof msg === "string" && msg.includes('"type":"Ack"')) {
+        return; // lost in flight
+      }
+      ws.send(msg);
+    });
+  });
+  await page.reload();
+  await waitConnected(page);
+
+  await addNote(page, stamp); // applied + logged server-side, ack swallowed
+  // The server has committed the push long before the reconnect below
+  // (3s backoff + boot); this bound just sequences the steps.
+  await page.waitForTimeout(500);
+
+  await page.routeWebSocket("**/sync", (ws) => ws.connectToServer());
+  await page.reload();
+  await waitConnected(page); // flush resends the unacked batch
+
+  // The log now records BOTH arrivals (at-least-once, by design) while
+  // the live table holds exactly one row — the duplicate was absorbed.
+  const logCount = () => {
+    try {
+      const out = execSync(
+        `podman compose exec -T postgres psql -U sync -d offline_notes -t -A -c ` +
+          `"SELECT count(*) FROM oxylite.sync_log WHERE payload->>'title' = '${stamp}'"`,
+        { cwd: "..", stdio: ["ignore", "pipe", "ignore"] },
+      )
+        .toString()
+        .trim();
+      return Number(out);
+    } catch {
+      return 0;
+    }
+  };
+  await expect.poll(logCount, { timeout: 15_000 }).toBe(2);
+
+  const rowCount = execSync(
+    `podman compose exec -T postgres psql -U sync -d offline_notes -t -A -c ` +
+      `"SELECT count(*) FROM notes WHERE title = '${stamp}'"`,
+    { cwd: "..", stdio: ["ignore", "pipe", "ignore"] },
+  )
+    .toString()
+    .trim();
+  expect(rowCount).toBe("1");
+
+  // One row in the UI, and a fresh client replays both log entries into
+  // the same single row — converged, not duplicated.
+  await expect(page.getByRole("listitem").filter({ hasText: stamp })).toHaveCount(1);
+  const ctxB = await page.context().browser()!.newContext();
+  const pageB = await ctxB.newPage();
+  await pageB.goto("/");
+  await expect(pageB.getByRole("listitem").filter({ hasText: stamp })).toHaveCount(1, {
+    timeout: 30_000,
+  });
+  await ctxB.close();
+});
+
 test("an offline delete loses to an unseen newer edit — the note resurrects everywhere", async ({
   page,
 }) => {
