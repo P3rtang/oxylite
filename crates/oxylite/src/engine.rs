@@ -668,14 +668,15 @@ impl<T: SyncTableWire> Engine<T> {
             // A row the mapper can't read must not wedge the flush: log
             // the reason (now typed — missing vs null vs wrong shape) and
             // keep it for the next connect.
-            let seq = match pglite::str_field_req(row, "seq") {
+            let seq = match row.str_field_req("seq") {
                 Ok(seq) => seq,
                 Err(e) => {
                     log("sync", &format!("op log row unreadable — keeping it: {e}"));
                     continue;
                 }
             };
-            let op: Op<T> = match pglite::str_field_req(row, "op")
+            let op: Op<T> = match row
+                .str_field_req("op")
                 .ok()
                 .and_then(|json| serde_json::from_str(&json).ok())
             {
@@ -687,7 +688,8 @@ impl<T: SyncTableWire> Engine<T> {
             };
             // batch_id is nullable in the schema (ALTER-added), so the
             // null-aware read: None lands in the keep-it branch too.
-            let batch = match pglite::str_field(row, "batch_id")
+            let batch = match row
+                .str_field("batch_id")
                 .ok()
                 .flatten()
                 .and_then(|b| b.parse().ok())
@@ -1114,7 +1116,7 @@ async fn load_cursor(pglite: &Pglite) -> i64 {
         .and_then(|r| {
             pglite::rows_of(&r)
                 .first()
-                .and_then(|row| pglite::str_field_req(row, "value").ok()?.parse().ok())
+                .and_then(|row| row.str_field_req("value").ok()?.parse().ok())
         })
         .unwrap_or(-1)
 }

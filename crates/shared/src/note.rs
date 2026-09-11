@@ -48,7 +48,7 @@ mod client {
     //! Rows come back as JS objects; Note knows how to build itself.
 
     use super::Note;
-    use oxylite::from_row::{FromRow, Row, RowError, str_field_req};
+    use oxylite::from_row::{FromRow, Row, RowError};
     use oxylite::timestamp::Timestamp;
 
     impl FromRow for Note {
@@ -57,12 +57,13 @@ mod client {
             // form reads cleanest: SQL NULL is its own error, never a
             // fabricated "missing column".
             Ok(Note {
-                id: str_field_req(row, "id")?
+                id: row
+                    .str_field_req("id")?
                     .parse()
                     .map_err(|_| RowError::BadUuid("id".into()))?,
-                title: str_field_req(row, "title")?,
-                body: str_field_req(row, "body")?,
-                updated_at: Timestamp::parse(str_field_req(row, "updated_at")?.as_str())
+                title: row.str_field_req("title")?,
+                body: row.str_field_req("body")?,
+                updated_at: Timestamp::parse(row.str_field_req("updated_at")?.as_str())
                     .map_err(|e| RowError::BadTimestamp("updated_at".into(), e))?,
             })
         }

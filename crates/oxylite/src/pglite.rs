@@ -3,6 +3,8 @@ use js_sys::{Function, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
+use crate::from_row::Row;
+
 /// Rust bridge to the vendored PGlite (the official ESM bundle copied
 /// verbatim into `crates/client/assets/pglite/`). No JS of our own is
 /// maintained: we instantiate PGlite's own artifact and call its public
@@ -184,19 +186,11 @@ impl BridgeError {
 }
 
 /// Read rows out of a PGlite query result. Each row is an object keyed by
-/// column name; only string values are extracted (our schema is text-only).
-pub fn rows_of(result: &JsValue) -> Vec<js_sys::Object> {
+/// column name, wrapped as the lib's `Row` (typed readers live there).
+pub fn rows_of(result: &JsValue) -> Vec<Row> {
     let arr: js_sys::Array = js_sys::Reflect::get(result, &"rows".into())
         .ok()
         .and_then(|v| v.dyn_into().ok())
         .unwrap_or_default();
-    arr.iter()
-        .filter_map(|row| row.dyn_into::<js_sys::Object>().ok())
-        .collect()
+    arr.iter().map(Row::from_value).collect()
 }
-
-// The JS-row field helper lives with the decode contract (`from_row`,
-// feature `client`): same rule as before — timestamptz columns come
-// back as JS `Date` objects, normalized to canonical ISO at this edge.
-// Re-exported so row impls keep one import path.
-pub use crate::from_row::{str_field, str_field_req};
