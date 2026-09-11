@@ -8,10 +8,10 @@
 //! macro-free means no `.sqlx` entries depend on a test target.
 
 use server::sync::{load_or_build_snapshot, pull_since, push};
-use sync_lib::delete::{OpExt, OpKind};
 use shared::timestamp::Timestamp;
 use shared::{Op, Table};
 use sqlx::types::chrono::{DateTime, Utc};
+use sync_lib::delete::{OpExt, OpKind};
 use uuid::Uuid;
 
 /// Parse in the helper: fixtures validate like the wire does.

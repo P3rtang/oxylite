@@ -4,6 +4,15 @@ name = "shared"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Side seams for the shared row contract (`SyncRow`, `Note`). The trait
+# and its SQL generators are pure and compile everywhere; the JS-row
+# decode is client-only (js_sys), and server-side row helpers land here
+# when one appears — the apply machinery itself lives in sync's `server`
+# feature, where sqlx is already a dependency.
+client = ["dep:js-sys", "dep:wasm-bindgen"]
+server = ["dep:sqlx"]
+
 [dependencies]
 enum-iterator = "2"
 serde = { version = "1", features = ["derive"] }
@@ -13,3 +22,7 @@ serde_json = "1"
 # (the client's clock is js_sys::Date), so the type parses what a
 # producer hands it — it never reads the clock itself.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+thiserror = "2"
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+sqlx = { version = "0.8", optional = true }

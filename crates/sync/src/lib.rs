@@ -20,12 +20,13 @@
 
 pub mod delete;
 
+#[cfg(feature = "client")]
 pub mod engine;
+#[cfg(feature = "client")]
 pub mod pglite;
+#[cfg(feature = "client")]
 pub mod query;
-
-// Cross-tab plumbing (Web Locks + BroadcastChannel): internal, reached
-// through the engine's API only.
+#[cfg(feature = "client")]
 mod tabs;
 
 #[cfg(feature = "server")]
@@ -34,5 +35,7 @@ pub mod server;
 #[cfg(feature = "axum")]
 pub mod ws;
 
+#[cfg(feature = "client")]
 pub use engine::{Engine, EngineError, STATUS, engine, init, timer_pause};
+#[cfg(feature = "client")]
 pub use pglite::{BridgeError, Pglite};

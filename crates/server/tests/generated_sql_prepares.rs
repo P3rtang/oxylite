@@ -12,8 +12,10 @@
 //! harness is (`#[sqlx::test]`); the generators themselves are
 //! feature-independent and compile host-side.
 
+use shared::SyncRow;
 use shared::Table;
-use sync_lib::query::{FromRow, Row, RowError, SyncRow};
+use shared::from_row::RowError;
+use shared::from_row::{FromRow, Row};
 use uuid::Uuid;
 
 /// The notes shape with an LWW axis — every guarded/tombstone statement.

@@ -5,6 +5,18 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+# The wasm client half: engine, PGlite bridge, reactive queries. Turns
+# on shared's `client` (the JS-row decode). Off in host builds, so the
+# server graph compiles zero browser machinery (previously the wasm
+# modules stub-compiled host-side).
+client = [
+    "dep:dioxus",
+    "dep:wasm-bindgen",
+    "dep:js-sys",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+    "shared/client",
+]
 # Server-side protocol machinery (Postgres via sqlx). Off by default so
 # the wasm client build never pulls sqlx; the backend enables it.
 server = ["dep:sqlx", "dep:enum-iterator"]
@@ -17,14 +29,14 @@ axum = ["server", "dep:axum", "dep:tokio"]
 
 [dependencies]
 shared = { path = "../shared" }
-dioxus = { version = "0.7", features = ["web"] }
-wasm-bindgen = "0.2"
-js-sys = "0.3"
-wasm-bindgen-futures = "0.4"
+dioxus = { version = "0.7", features = ["web"], optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
 serde = "1"
 serde_json = "1"
 uuid = { version = "1", features = ["v7", "js", "serde"] }
-web-sys = { version = "0.3", features = [
+web-sys = { version = "0.3", optional = true, features = [
     "WebSocket",
     "MessageEvent",
     "Location",

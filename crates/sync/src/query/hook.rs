@@ -4,9 +4,9 @@ use crate::engine::{EngineError, engine, log};
 use dioxus::prelude::*;
 
 use super::dep::Dep;
-use super::from_row::FromRow;
 use super::statement::Query;
-use super::sync_row::SyncRow;
+use shared::SyncRow;
+use shared::from_row::FromRow;
 
 /// Dioxus hook: run a query once now, then re-run whenever its deps fire
 /// (locally or via server events). Unregisters on unmount via the
@@ -47,6 +47,6 @@ pub fn use_query<T: FromRow + 'static>(query: Query) -> Signal<Result<Vec<T>, En
 /// impls it gets the full read/write machinery, and anything bespoke
 /// (joined views, filtered lists) overrides the defaults or passes its
 /// own `Query` to `use_query`.
-pub fn use_select_all<T: SyncRow + 'static>() -> Signal<Result<Vec<T>, EngineError>> {
+pub fn use_select_all<T: SyncRow + FromRow + 'static>() -> Signal<Result<Vec<T>, EngineError>> {
     use_query::<T>(Query::new(&T::select_all_sql()).dep(Dep::Table(T::TABLE)))
 }

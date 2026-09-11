@@ -8,11 +8,12 @@
 //! The `sync_log`/`snapshots` schema comes from the shared migrations.
 
 use enum_iterator::{Sequence, all};
-use shared::{ClientMsg, Op, ServerMsg, Table, TableData, Timestamp};
-use sqlx::postgres::PgConnection;
-use sqlx::postgres::PgPool;
+use shared::{ClientMsg, Op, ServerMsg, SyncRow, Table, TableData, Timestamp};
+use sqlx::postgres::{PgConnection, PgPool};
 use std::future::Future;
 use thiserror::Error;
+
+use crate::delete::{OpExt, OpKind};
 
 /// A synced table, as the machinery sees it. The implementing repo's
 /// table enum derives `Sequence` (so a new variant joins every loop
@@ -327,6 +328,78 @@ async fn snapshot_msg<S: SnapshotSource<Table>>(
             .collect(),
         tombstones,
     })
+}
+
+/// Apply one op to a SyncRow table on the host. The payload parses into
+/// the caller's row type and the statements are the SAME SyncRow
+/// defaults the client's engine executes — one declaration (`impl
+/// SyncRow for ...` in `shared`) feeds both sides, so a hand-written
+/// server copy can never drift (reviewer goal, #30: a new table is one
+/// row impl + one match arm). Runtime API on purpose: the SQL is
+/// generated per table (a checked macro could never be generic over the
+/// mapping), and the shapes are PREPARE-checked against the real schema
+/// in CI (`server/tests/generated_sql_prepares.rs`) — the same guard the
+/// generated client statements already had. The checked macros remain
+/// for the generic protocol queries (sync_log, snapshots storage).
+///
+/// Binds are the row's own string params; the generated casts
+/// (`$N::uuid`, `$N::timestamptz`) type them against the real columns —
+/// identical to how PGlite binds them.
+pub async fn apply_one<T>(op: &Op, tx: &mut PgConnection) -> Result<(), SyncError>
+where
+    T: SyncRow + serde::de::DeserializeOwned,
+{
+    match op.kind() {
+        OpKind::Delete => {
+            // The delete needs only the table name and the LWW axis —
+            // both live in the row mapping; the payload is null.
+            let params = vec![op.id.to_string(), op.updated_at.canonical_text()];
+            exec_binds(&T::delete_sql(1), params, tx).await?;
+        }
+        OpKind::Upsert => {
+            let row: T = serde_json::from_value(op.data.clone())?;
+            exec_binds(&T::guarded_upsert_sql(1), row.params(), tx).await?;
+            if T::LWW.is_some() {
+                // A strictly newer write resurrects: clear the tombstone.
+                let pairs = vec![row.pk().to_string(), row.lww_value()];
+                exec_binds(&T::tombstone_clear_sql(1), pairs, tx).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn exec_binds(
+    sql: &str,
+    params: Vec<String>,
+    tx: &mut PgConnection,
+) -> Result<(), SyncError> {
+    let mut q = sqlx::query(sql);
+    for p in params {
+        q = q.bind(p);
+    }
+    q.execute(tx).await?;
+    Ok(())
+}
+
+/// Snapshot extraction for SyncRow tables: the SELECT is
+/// table-name-generic (the name comes from the `SyncTable` enum, never
+/// user input), so ONE impl serves every table forever — a new table
+/// needs no snapshot arm at all. `ORDER BY id` is the protocol's pk
+/// convention (`SyncRow::PK`'s default).
+#[derive(Clone, Copy)]
+pub struct SyncRowSnapshots;
+
+impl<T: SyncTable + Send> SnapshotSource<T> for SyncRowSnapshots {
+    async fn snapshot(&self, table: T, db: &PgPool) -> Result<serde_json::Value, sqlx::Error> {
+        sqlx::query_scalar::<_, serde_json::Value>(&format!(
+            "SELECT COALESCE(jsonb_agg(row_to_json(n)), '[]'::jsonb) \
+             FROM (SELECT * FROM {} ORDER BY id) n",
+            table.as_str()
+        ))
+        .fetch_one(db)
+        .await
+    }
 }
 
 /// Per-connection protocol decisions, transport-free: everything a

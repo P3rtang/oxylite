@@ -32,9 +32,10 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::WebSocket;
 
 use crate::pglite::{self, BridgeError, Pglite};
-use crate::query::{FromRow, Query, RowError, Subscription, SubscriptionGuard, SubscriptionId};
+use crate::query::{Query, Subscription, SubscriptionGuard, SubscriptionId};
 use crate::tabs;
 use dioxus::prelude::{Global, Signal, WritableExt};
+use shared::from_row::{FromRow, RowError};
 use shared::{ClientMsg, Op, ServerMsg, Table, timestamp::Timestamp};
 
 /// Connection status for the UI status line. A GlobalSignal because it is

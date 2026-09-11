@@ -8,9 +8,10 @@ mod notify;
 use dioxus::prelude::*;
 use notes::{Note, display_time, new_note, notes_sink, op_for_delete, op_for_note};
 use notify::{Notice, NoticeOverlay, notify};
+use shared::SyncRow;
 use shared::Table;
 use sync::engine::{self, EngineError, engine};
-use sync::query::{SyncRow, use_select_all};
+use sync::query::use_select_all;
 
 fn main() {
     console_error_panic_hook::set_once();

@@ -43,10 +43,16 @@ async fn main() {
         )))
         // The WS sync endpoint is a lib drop-in (sync crate, `axum`
         // feature); the app plugs in its table impls.
-        .merge(sync::sync_router(db.clone(), sync::Apply, sync::Snapshots))
+        .merge(sync::sync_router(
+            db.clone(),
+            sync::Apply,
+            sync::SyncRowSnapshots,
+        ))
         .layer(tower_http::cors::CorsLayer::permissive());
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+
     println!("server listening on http://0.0.0.0:3000 (ws sync at /sync)");
+
     axum::serve(listener, app).await.unwrap();
 }

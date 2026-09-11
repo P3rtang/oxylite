@@ -7,8 +7,9 @@
 //! types) is covered by the prepare-checks in
 //! `crates/server/tests/generated_sql_prepares.rs`.
 
+use shared::SyncRow;
 use shared::Table;
-use sync::query::{FromRow, Row, RowError, SyncRow};
+use shared::from_row::{FromRow, Row, RowError};
 use uuid::Uuid;
 
 struct TestNote {

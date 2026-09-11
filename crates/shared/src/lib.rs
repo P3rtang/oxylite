@@ -1,18 +1,15 @@
+pub mod from_row;
+pub mod note;
+pub mod sync_row;
 pub mod timestamp;
 
+pub use note::Note;
+pub use sync_row::SyncRow;
 pub use timestamp::{Timestamp, TimestampError};
 
 use enum_iterator::Sequence;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Note {
-    pub id: Uuid,
-    pub title: String,
-    pub body: String,
-    pub updated_at: Timestamp,
-}
 
 /// An operation the client pushes, or the server replays from sync_log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
