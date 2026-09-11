@@ -12,7 +12,7 @@ fi
 blue "starting Postgres (podman compose)…"
 (cd "$ROOT" && podman compose up -d) >/dev/null 2>&1 || red "podman compose failed — check .logs/server.log"
 
-wait_for_url "postgres://sync:sync@localhost:5432/offline_notes" 1 >/dev/null 2>&1
+wait_for_pg 30 || { red "postgres not ready after 30s — check .logs/server.log"; exit 1; }
 
 blue "building server…"
 cargo build -q -p server 2>"$LOG_DIR/build-server.log"

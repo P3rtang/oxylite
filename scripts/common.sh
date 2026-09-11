@@ -29,3 +29,17 @@ wait_for_url() { # url, timeout_seconds
         fi
     done
 }
+
+wait_for_pg() { # timeout_seconds — Postgres readiness via pg_isready INSIDE
+    # the container: curl cannot speak the wire protocol (a postgres:// URL
+    # fails instantly on modern curl, which killed serve-server under set -e),
+    # and pg_isready on the host is not a given — the container has it.
+    local timeout="${1:-30}" elapsed=0
+    until (cd "$ROOT" && podman compose exec -T postgres pg_isready -U sync -d offline_notes) >/dev/null 2>&1; do
+        sleep 1
+        elapsed=$((elapsed + 1))
+        if [ "$elapsed" -ge "$timeout" ]; then
+            return 1
+        fi
+    done
+}
