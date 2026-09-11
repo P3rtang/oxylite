@@ -104,31 +104,9 @@ impl Table {
     }
 }
 
-/// The schema migrations, applied in order by both sides from this single
-/// source: the server via `sqlx::migrate!` (same directory, embedded at
-/// compile time, tracked in `_sqlx_migrations`); each client applies them on
-/// first boot against its own PGlite (tracked in the `meta` table).
-pub static MIGRATIONS: &[(&str, &str)] = &[
-    ("0001_notes", include_str!("../migrations/0001_notes.sql")),
-    (
-        "0002_sync_log",
-        include_str!("../migrations/0002_sync_log.sql"),
-    ),
-    ("0003_meta", include_str!("../migrations/0003_meta.sql")),
-    (
-        "0004_snapshots",
-        include_str!("../migrations/0004_snapshots.sql"),
-    ),
-    (
-        "0005_pending_ops",
-        include_str!("../migrations/0005_pending_ops.sql"),
-    ),
-    (
-        "0006_tombstones",
-        include_str!("../migrations/0006_tombstones.sql"),
-    ),
-    (
-        "0007_timestamptz",
-        include_str!("../migrations/0007_timestamptz.sql"),
-    ),
-];
+// The migration list is generated at build time (see build.rs): a scan
+// of migrations/, sorted lexicographically (= applied order, the same
+// contract sqlx::migrate! follows server-side), each file embedded with
+// include_str!. Adding a migration file is the whole job — naming
+// violations fail the build.
+include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
