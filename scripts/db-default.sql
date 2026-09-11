@@ -66,7 +66,8 @@ ALTER TABLE oxylite.meta OWNER TO sync;
 
 CREATE TABLE oxylite.pending_ops (
     seq bigint NOT NULL,
-    op text NOT NULL
+    op text NOT NULL,
+    batch_id uuid
 );
 
 
@@ -212,7 +213,7 @@ COPY oxylite.meta (key, value) FROM stdin;
 -- Data for Name: pending_ops; Type: TABLE DATA; Schema: oxylite; Owner: sync
 --
 
-COPY oxylite.pending_ops (seq, op) FROM stdin;
+COPY oxylite.pending_ops (seq, op, batch_id) FROM stdin;
 \.
 
 
@@ -256,6 +257,7 @@ COPY public._sqlx_migrations (version, description, installed_on, success, check
 6	0006_tombstones	2026-01-01 00:00:00+00	t	\\x98cce88a615c125ef991efe86a33000f09c49b1c431901275675ff68dc3e5ea2f0faed16b478ffd40e4364fa75176ec6	0
 7	0007_protocol_timestamps	2026-01-01 00:00:00+00	t	\\xd0abdbec32d884f1bb21daf2282daba44aa7634375f08185fee230e6ea4dc444e6a95eaf59cd39aae1a4f364ba10a601	0
 8	0008_notes_timestamptz	2026-01-01 00:00:00+00	t	\\x8a214eb10d3c56806fc67c0c3b04bd3c6ec7715177a53e80e68f7a0f93bb7ac3614a3b02f29b72fbea90e885208254f6	0
+9	0009_pending_batch	2026-01-01 00:00:00+00	t	\\x6dd3e3bb656efb317b040b09719828dbd71ba2360db3f723ff5d0a72935c41646a40fa4655274334387cee9ad33f4fbc	0
 \.
 
 

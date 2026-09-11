@@ -422,10 +422,14 @@ impl<T: SyncTableWire> Engine<T> {
         }
     }
 
-    /// Deliver an operation: send it if the socket is OPEN, else persist
-    /// it in the durable op log (pending_ops) for the connect flush.
-    /// At-least-once; LWW makes retries harmless. Subordinates hand the
-    /// op to the leader, whose log it becomes.
+    /// Deliver an operation: persist it in the durable op log FIRST
+    /// (write-ahead, with a client-generated batch id), then send it if
+    /// the socket is open. The pending row is retired ONLY by the
+    /// server's Ack (handle_msg) — never by an accepted send: a socket
+    /// can accept a frame and die before the server reads it, and an op
+    /// deleted on send-acceptance is lost cross-client forever (#33).
+    /// The resend on reconnect is a no-op under LWW. Subordinates hand
+    /// the op to the leader, whose log it becomes.
     pub async fn push(&self, op: Op<T>) {
         match self.wait_role().await {
             Role::Leader => self.push_local(op).await,
@@ -447,24 +451,14 @@ impl<T: SyncTableWire> Engine<T> {
     }
 
     async fn push_local(&self, op: Op<T>) {
-        let open = self
-            .sock
-            .borrow()
-            .as_ref()
-            .is_some_and(|ws| ws.ready_state() == WebSocket::OPEN);
-        if open {
-            self.send(&ClientMsg::Push { ops: vec![op] });
-            return;
-        }
-        // Offline: the op must survive this tab (and this engine) dying.
-        // Persist before anything else can forget it; a failed write is
-        // surfaced — an op that vanishes here is lost cross-client.
+        // The op log must be reachable for EVERY push now (write-ahead):
+        // its row is what makes the send survivable.
         let db = match Pglite::init(self.migrations).await {
             Ok(db) => db,
             Err(e) => {
                 log("sync", &format!("op log unavailable: {e}"));
                 self.set_last_error(EngineError::Sink(format!(
-                    "offline write could not be persisted: {e}"
+                    "write could not be persisted: {e}"
                 )));
                 return;
             }
@@ -473,19 +467,41 @@ impl<T: SyncTableWire> Engine<T> {
             Ok(json) => json,
             Err(e) => {
                 log("sync", &format!("op serialization failed: {e}"));
+                self.set_last_error(EngineError::Sink(format!(
+                    "write could not be serialized: {e}"
+                )));
                 return;
             }
         };
+        // One batch id per push: the invariant that lets an Ack retire
+        // exactly the row(s) it confirms (flush sends one row per
+        // message under its own batch id). v7: time-ordered, so a
+        // batch's log position roughly tracks its creation.
+        let batch = Uuid::now_v7();
         if let Err(e) = db
             .query(
-                &format!("INSERT INTO {SCHEMA}.pending_ops (op) VALUES ($1)"),
-                &[json],
+                &format!("INSERT INTO {SCHEMA}.pending_ops (op, batch_id) VALUES ($1, $2)"),
+                &[json, batch.to_string()],
             )
             .await
         {
             log("sync", &format!("op log write failed: {e}"));
             self.set_last_error(EngineError::Sql(e));
+            return;
         }
+        let open = self
+            .sock
+            .borrow()
+            .as_ref()
+            .is_some_and(|ws| ws.ready_state() == WebSocket::OPEN);
+        if open {
+            self.send(&ClientMsg::Push {
+                ops: vec![op],
+                batch,
+            });
+        }
+        // Not open: the row waits for the connect flush. Either way the
+        // Ack — not this send — decides when the row is retired.
     }
 
     /// Entry point for the socket's onmessage callback. Runs outside any
@@ -624,18 +640,20 @@ impl<T: SyncTableWire> Engine<T> {
             .is_some_and(|ws| ws.send_with_str(&text).is_ok())
     }
 
-    /// Drain the durable op log on connect: send what's queued, then
-    /// delete the rows whose send the socket accepted. A refused send
-    /// (socket died mid-flush) keeps its row — the next connect retries
-    /// it. At-least-once: the server may see a row twice across attempts,
-    /// which LWW resolves. The window between an accepted send and the
-    /// server writing it is the same exposure the old in-memory queue
-    /// had (mem::take then fire-and-forget); ack-based deletion is the
-    /// stronger follow-up.
+    /// Drain the durable op log on connect: resend every pending batch.
+    /// Rows are NOT deleted here — retirement is the Ack's job
+    /// (`handle_msg`): a send the socket accepted tells us nothing about
+    /// whether the server read it. An unacked batch simply resends on
+    /// every connect until acknowledged; LWW makes the replay a no-op.
+    /// One row per message under its own batch id (the persist-first
+    /// invariant: a batch is exactly one push_local call).
     async fn flush_pending(&self, db: &Pglite) {
         let rows = match db
             .query(
-                &format!("SELECT seq::text, op FROM {SCHEMA}.pending_ops ORDER BY seq"),
+                &format!(
+                    "SELECT seq::text, op, COALESCE(batch_id::text, '') AS batch_id \
+                     FROM {SCHEMA}.pending_ops ORDER BY seq"
+                ),
                 &[],
             )
             .await
@@ -646,7 +664,6 @@ impl<T: SyncTableWire> Engine<T> {
                 return;
             }
         };
-        let mut accepted: Vec<String> = Vec::with_capacity(rows.len());
         for row in &rows {
             let Some(seq) = pglite::str_field(row, "seq") else {
                 continue;
@@ -656,31 +673,28 @@ impl<T: SyncTableWire> Engine<T> {
             {
                 Some(op) => op,
                 None => {
-                    log("sync", "op log row unparsable — keeping it");
+                    log("sync", &format!("op log row {seq} unparsable — keeping it"));
                     continue;
                 }
             };
-            if self.send_ok(&ClientMsg::Push { ops: vec![op] }) {
-                accepted.push(seq);
-            }
-        }
-        if accepted.is_empty() {
-            return;
-        }
-        let slots: Vec<String> = (1..=accepted.len()).map(|i| format!("${i}")).collect();
-        if let Err(e) = db
-            .query(
-                &format!(
-                    "DELETE FROM {SCHEMA}.pending_ops WHERE seq IN ({})",
-                    slots.join(", ")
-                ),
-                &accepted,
-            )
-            .await
-        {
-            // The sends were accepted but the delete failed: the next
-            // connect replays them — harmless under LWW.
-            log("sync", &format!("op log cleanup failed: {e}"));
+            let batch = match pglite::str_field(row, "batch_id").and_then(|b| b.parse().ok()) {
+                Some(batch) => batch,
+                None => {
+                    // Unreachable since migration 0008 backfills ids —
+                    // a row without one must not fly under a fabricated
+                    // id that could collide with a live batch's ack.
+                    log(
+                        "sync",
+                        &format!("op log row {seq} has no batch id — keeping it"),
+                    );
+                    continue;
+                }
+            };
+            // A refused send keeps its row; the next connect retries.
+            self.send(&ClientMsg::Push {
+                ops: vec![op],
+                batch,
+            });
         }
     }
 
@@ -881,7 +895,19 @@ impl<T: SyncTableWire> Engine<T> {
 
     async fn handle_msg(&self, db: &Pglite, msg: ServerMsg<T>) {
         match msg {
-            ServerMsg::Ack { .. } => {
+            ServerMsg::Ack { batch, .. } => {
+                // The server confirmed this batch: retire its pending
+                // rows. A failed delete is logged — the next flush
+                // resends the batch (LWW no-op) and acks again.
+                if let Err(e) = db
+                    .query(
+                        &format!("DELETE FROM {SCHEMA}.pending_ops WHERE batch_id = $1"),
+                        &[batch.to_string()],
+                    )
+                    .await
+                {
+                    log("sync", &format!("ack retirement failed: {e}"));
+                }
                 // The server may hold events we haven't seen; pull again.
                 self.send(&ClientMsg::Pull {
                     since: self.cursor.get(),
@@ -892,8 +918,6 @@ impl<T: SyncTableWire> Engine<T> {
                     "sync",
                     &format!("received {} events, cursor -> {}", events.len(), c),
                 );
-                self.cursor.set(c);
-                save_cursor(db, c).await;
                 // Every event already IS the invalidation notice — its
                 // (table, row_id) rides along with the payload, so phase 1
                 // needs no extra protocol messages (phase 2 can send a
@@ -905,6 +929,7 @@ impl<T: SyncTableWire> Engine<T> {
                     }
                 }
                 let mut touched = Vec::with_capacity(events.len());
+                let mut failed: Option<EngineError> = None;
                 for table in unique {
                     let ops: Vec<Op<T>> = events
                         .iter()
@@ -915,7 +940,7 @@ impl<T: SyncTableWire> Engine<T> {
                         Ok(ids) => touched.extend(ids.into_iter().map(|id| (table, id))),
                         Err(e) => {
                             log("sync", &format!("apply failed: {e}"));
-                            self.set_last_error(e);
+                            failed = Some(e);
                         }
                     }
                 }
@@ -923,6 +948,19 @@ impl<T: SyncTableWire> Engine<T> {
                 // re-run each query once, not once per row (the UI would
                 // visibly re-render row by row).
                 self.bump(&touched);
+                if let Some(e) = failed {
+                    // Apply failed: the cursor must NOT advance past data
+                    // the client never wrote (the old order — save, then
+                    // apply — permanently skipped anything a crash or a
+                    // failing chunk interrupted). The batch stays pending:
+                    // the next ack or reconnect re-pulls it (at-least-once,
+                    // LWW-idempotent), and LAST_ERROR keeps the stuck batch
+                    // visible instead of silently skipped.
+                    self.set_last_error(e);
+                    return;
+                }
+                self.cursor.set(c);
+                save_cursor(db, c).await;
                 // The batch is a window into the backlog: keep pulling
                 // until the server returns an empty one. (At-least-once;
                 // LWW makes replays idempotent.)

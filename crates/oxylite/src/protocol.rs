@@ -26,19 +26,27 @@ pub struct Op<T: SyncTable> {
 pub enum ClientMsg<T: SyncTable> {
     Push {
         ops: Vec<Op<T>>,
+        /// Client-generated batch identity for durable-delivery: the
+        /// client persists its ops (with this id) before sending and
+        /// deletes them only when the Ack echoes the id — a socket that
+        /// accepts a send and dies before the server reads it loses
+        /// nothing, the next connect resends the batch (LWW makes the
+        /// retry a no-op). Server-side this is pure echo: the id is
+        /// never stored or interpreted.
+        batch: Uuid,
     },
     /// Ask for all events after this sequence number.
-    Pull {
-        since: i64,
-    },
+    Pull { since: i64 },
 }
 
 /// Server -> client.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ServerMsg<T: SyncTable> {
-    /// Result of a Push: server-assigned cursor so far.
-    Ack { cursor: i64 },
+    /// Result of a Push: server-assigned cursor so far, plus the push's
+    /// batch id so the client can retire exactly the ops the server
+    /// confirmed (durable delivery, see `ClientMsg::Push`).
+    Ack { cursor: i64, batch: Uuid },
     /// New events the client should apply.
     Events { events: Vec<Op<T>>, cursor: i64 },
     /// Full table state at `seq`, replacing per-op replay for clients that

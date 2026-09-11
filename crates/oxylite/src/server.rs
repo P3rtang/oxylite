@@ -28,10 +28,13 @@ use crate::timestamp::Timestamp;
 /// `async fn` — Send-ness is checked at the impl).
 pub trait SnapshotSource<T: SyncTable> {
     /// The snapshot payload for `table`, aggregated from its live rows.
+    /// Runs on the rebuild's transaction: every table is read from ONE
+    /// point-in-time, so a concurrent push between two tables' reads
+    /// cannot tear the snapshot into mixed generations.
     fn snapshot(
         &self,
         table: T,
-        db: &PgPool,
+        tx: &mut PgConnection,
     ) -> impl Future<Output = Result<serde_json::Value, sqlx::Error>> + Send;
 }
 
@@ -63,18 +66,26 @@ pub async fn current_cursor(db: &PgPool) -> i64 {
 }
 
 /// Rebuild every table's snapshot from the live tables (the source of
-/// truth — cheaper and simpler than replaying sync_log).
+/// truth — cheaper and simpler than replaying sync_log). ONE transaction:
+/// the log head and every table's rows are read at the same point-in-time
+/// and the generation lands atomically — a snapshot can never mix table
+/// generations (a mixed one would report a seq some tables never reached,
+/// and clients would skip that stretch of log).
 pub async fn rebuild_snapshots<T: SyncTable, S: SnapshotSource<T>>(
     db: &PgPool,
     source: &S,
 ) -> Result<(), sqlx::Error> {
-    let head = current_cursor(db).await;
+    let mut tx = db.begin().await?;
+    let head: i64 =
+        sqlx::query_scalar!(r#"SELECT COALESCE(MAX(seq), 0) as "head!" FROM oxylite.sync_log"#,)
+            .fetch_one(&mut *tx)
+            .await?;
 
     // `all()` is derived from the table enum, so a new variant joins this
     // loop automatically; `SnapshotSource` must then handle it, or the
     // build breaks.
     for table in all::<T>() {
-        let data = source.snapshot(table, db).await?;
+        let data = source.snapshot(table, &mut tx).await?;
 
         sqlx::query!(
             "INSERT INTO oxylite.snapshots (table_name, seq, data)
@@ -85,10 +96,11 @@ pub async fn rebuild_snapshots<T: SyncTable, S: SnapshotSource<T>>(
             head,
             data,
         )
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
     }
 
+    tx.commit().await?;
     Ok(())
 }
 
@@ -374,13 +386,17 @@ async fn exec_binds(
 pub struct SyncRowSnapshots;
 
 impl<T: SyncTable> SnapshotSource<T> for SyncRowSnapshots {
-    async fn snapshot(&self, table: T, db: &PgPool) -> Result<serde_json::Value, sqlx::Error> {
+    async fn snapshot(
+        &self,
+        table: T,
+        tx: &mut PgConnection,
+    ) -> Result<serde_json::Value, sqlx::Error> {
         sqlx::query_scalar::<_, serde_json::Value>(&format!(
             "SELECT COALESCE(jsonb_agg(row_to_json(n)), '[]'::jsonb) \
              FROM (SELECT * FROM {} ORDER BY id) n",
             table.as_str()
         ))
-        .fetch_one(db)
+        .fetch_one(tx)
         .await
     }
 }
@@ -421,9 +437,9 @@ impl<T: SyncTableWire, A: OpApply<T>, S: SnapshotSource<T>> Session<T, A, S> {
         text: &str,
     ) -> Result<Option<ServerMsg<T>>, SyncError> {
         match serde_json::from_str::<ClientMsg<T>>(text)? {
-            ClientMsg::Push { ops } => {
+            ClientMsg::Push { ops, batch } => {
                 let cursor = push(db, &ops, &self.applier).await?;
-                Ok(Some(ServerMsg::Ack { cursor }))
+                Ok(Some(ServerMsg::Ack { cursor, batch }))
             }
             ClientMsg::Pull { since } => {
                 // Far behind? Replay would be one upsert per logged op —
