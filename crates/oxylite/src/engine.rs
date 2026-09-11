@@ -665,10 +665,18 @@ impl<T: SyncTableWire> Engine<T> {
             }
         };
         for row in &rows {
-            let Some(seq) = pglite::str_field(row, "seq") else {
-                continue;
+            // A row the mapper can't read must not wedge the flush: log
+            // the reason (now typed — missing vs null vs wrong shape) and
+            // keep it for the next connect.
+            let seq = match pglite::str_field_req(row, "seq") {
+                Ok(seq) => seq,
+                Err(e) => {
+                    log("sync", &format!("op log row unreadable — keeping it: {e}"));
+                    continue;
+                }
             };
-            let op: Op<T> = match pglite::str_field(row, "op")
+            let op: Op<T> = match pglite::str_field_req(row, "op")
+                .ok()
                 .and_then(|json| serde_json::from_str(&json).ok())
             {
                 Some(op) => op,
@@ -677,10 +685,16 @@ impl<T: SyncTableWire> Engine<T> {
                     continue;
                 }
             };
-            let batch = match pglite::str_field(row, "batch_id").and_then(|b| b.parse().ok()) {
+            // batch_id is nullable in the schema (ALTER-added), so the
+            // null-aware read: None lands in the keep-it branch too.
+            let batch = match pglite::str_field(row, "batch_id")
+                .ok()
+                .flatten()
+                .and_then(|b| b.parse().ok())
+            {
                 Some(batch) => batch,
                 None => {
-                    // Unreachable since migration 0008 backfills ids —
+                    // Unreachable since migration 0009 backfills ids —
                     // a row without one must not fly under a fabricated
                     // id that could collide with a live batch's ack.
                     log(
@@ -1100,7 +1114,7 @@ async fn load_cursor(pglite: &Pglite) -> i64 {
         .and_then(|r| {
             pglite::rows_of(&r)
                 .first()
-                .and_then(|row| pglite::str_field(row, "value")?.parse().ok())
+                .and_then(|row| pglite::str_field_req(row, "value").ok()?.parse().ok())
         })
         .unwrap_or(-1)
 }

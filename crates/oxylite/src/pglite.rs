@@ -199,4 +199,4 @@ pub fn rows_of(result: &JsValue) -> Vec<js_sys::Object> {
 // feature `client`): same rule as before — timestamptz columns come
 // back as JS `Date` objects, normalized to canonical ISO at this edge.
 // Re-exported so row impls keep one import path.
-pub use crate::from_row::str_field;
+pub use crate::from_row::{str_field, str_field_req};

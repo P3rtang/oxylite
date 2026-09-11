@@ -67,7 +67,7 @@ pub const SCHEMA: &str = "oxylite";
 #[cfg(feature = "client")]
 pub use engine::{Engine, EngineError, STATUS, engine, init, timer_pause};
 #[cfg(feature = "client")]
-pub use from_row::{FromRow, Row, RowError, str_field};
+pub use from_row::{FromRow, Row, RowError, Type, str_field, str_field_req};
 #[cfg(feature = "client")]
 pub use pglite::{BridgeError, Pglite};
 
