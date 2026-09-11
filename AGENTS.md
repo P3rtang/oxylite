@@ -76,6 +76,24 @@ go through the `start_background_job` tool (custom opencode plugin,
   `--trace on`)
 - **cmd mode**: `cmd` for any arbitrary command (`cargo test -p server`,
   `scripts/db-default.sh rebuild`, psql one-offs)
+- **peek**: `peek: '<id>'` (or `'all'`) — elapsed time + short tail for
+  a running job, no wake, no queueing. The queue message carries the
+  job `id`.
+- **cmd mode naming**: `name:` overrides the auto-slug for cmd jobs —
+  friendly ids for `peek` (`name: 'dump-rebuild'` →
+  `dump-rebuild-<ts>.log`).
+- **Conflicts**: a second stack job (e2e/full — they share the
+  Playwright stack + the default-state Postgres restore) is REFUSED
+  while one runs; lint can run alongside.
+- **Stall timeout**: 30 min default (0 disables), `timeout_min`
+  overrides — a hung job is killed and still wakes the session.
+- **Wake quality**: failed jobs wake with a bounded "failure markers"
+  section (✘/failed/error lines, ANSI-stripped) — act without reading
+  the whole log.
+- **Restart recovery**: job state is persisted, so a job that outlives
+  an opencode restart (plugin edits require one!) still wakes the
+  session it was queued from — including "finished while opencode was
+  down" reports. PID reuse is detected via /proc starttime.
 - Queue the job and **end your turn** — a message with the exit code
   and log tail arrives when it finishes; full log at
   `/tmp/opencode/<slug>-<id>.log`. Never sleep-poll.
