@@ -2953,7 +2953,6 @@ dependencies = [
  "shared",
  "sqlx",
  "sync",
- "thiserror 2.0.20",
  "tokio",
  "tower-http",
  "uuid",
@@ -3383,6 +3382,7 @@ dependencies = [
 name = "sync"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "dioxus",
  "enum-iterator",
  "js-sys",
@@ -3391,6 +3391,7 @@ dependencies = [
  "shared",
  "sqlx",
  "thiserror 2.0.20",
+ "tokio",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",

@@ -8,9 +8,11 @@
 //! The `sync_log`/`snapshots` schema comes from the shared migrations.
 
 use enum_iterator::{Sequence, all};
-use shared::Table;
+use shared::{ClientMsg, Op, ServerMsg, Table, TableData, Timestamp};
+use sqlx::postgres::PgConnection;
 use sqlx::postgres::PgPool;
 use std::future::Future;
+use thiserror::Error;
 
 /// A synced table, as the machinery sees it. The implementing repo's
 /// table enum derives `Sequence` (so a new variant joins every loop
@@ -187,4 +189,196 @@ pub async fn load_or_build_snapshot<T: SyncTable, S: SnapshotSource<T>>(
     }
 
     Ok((seq, tables, tombstones))
+}
+
+/// Why a server sync operation failed. Typed so callers match on the shape
+/// of the failure; sources convert with `#[from]` (errors-spec shape —
+/// moved here with `pull_since`/`push`, which own these failure kinds).
+#[derive(Debug, Error)]
+pub enum SyncError {
+    #[error("sql: {0}")]
+    Sql(#[from] sqlx::Error),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+/// Events after `since`, windowed, with the seq the batch reaches.
+/// Protocol machinery, not app code: this touches only `sync_log` —
+/// the log's schema is the lib's own (shared migrations), so the whole
+/// read path is generic. Only the apply path is per-table.
+pub async fn pull_since(db: &PgPool, since: i64) -> Result<(Vec<Op>, i64), SyncError> {
+    let head: i64 =
+        sqlx::query_scalar!(r#"SELECT COALESCE(MAX(seq), 0) as "head!" FROM sync_log"#,)
+            .fetch_one(db)
+            .await?;
+
+    if since >= head {
+        return Ok((Vec::new(), head));
+    }
+
+    let rows = sqlx::query!(
+        "SELECT seq, table_name, row_id, payload, updated_at
+         FROM sync_log WHERE seq > $1 ORDER BY seq LIMIT 1000",
+        since,
+    )
+    .fetch_all(db)
+    .await?;
+
+    // The cursor is the LAST STREAMED seq, never the head: the batch is a
+    // window into the backlog, and returning the head here let clients
+    // skip every event past the window (their cursor jumped ahead while
+    // the data stayed on the server).
+    let cursor = rows.last().map(|row| row.seq).unwrap_or(head);
+
+    let mut events = Vec::with_capacity(rows.len());
+    for row in rows {
+        // Unknown table names (newer client) are skipped: this server is
+        // the compat boundary and can't apply what it doesn't know.
+        let Some(table) = Table::from_name(&row.table_name) else {
+            continue;
+        };
+        events.push(Op {
+            table,
+            id: row.row_id,
+            data: row.payload,
+            // The op's own timestamp: a delete's payload is null (that
+            // is the marker), so `updated_at` must ride the log row.
+            // Infallible: the column is timestamptz, so the decode is a
+            // real DateTime — the storage layer did the validating.
+            updated_at: Timestamp::from_datetime(row.updated_at),
+        });
+    }
+
+    Ok((events, cursor))
+}
+
+/// Per-table op application, implemented app-side where the checked SQL
+/// lives — the [`SnapshotSource`] pattern for the push path. The impl's
+/// match on kind + table is the compile guarantee: exhaustive, so a new
+/// variant breaks the build until its arm exists.
+///
+/// The future is `Send` on purpose (same as [`SnapshotSource`]): the
+/// push path must stay `tokio::spawn`-able; impls use plain `async fn`
+/// and are checked at the impl.
+pub trait OpApply {
+    /// Apply one op to the app's live tables, inside `push`'s
+    /// transaction. `push` logs the op AFTER this returns, whatever the
+    /// apply decided (dropped guards included): the log is the wire
+    /// history, guards decide at apply time.
+    fn apply(
+        &self,
+        op: &Op,
+        tx: &mut PgConnection,
+    ) -> impl Future<Output = Result<(), SyncError>> + Send;
+}
+
+/// Apply each op to the live tables — via the app's [`OpApply`] impl for
+/// the per-table arms, then append it to the sync log (lib-owned: the
+/// log is generic). A delete is an op like any other — `{table, id,
+/// updated_at, data: null}` — and is logged whatever the apply decided:
+/// the log is the wire history, guards decide at apply time.
+pub async fn push<A: OpApply>(db: &PgPool, ops: &[Op], applier: &A) -> Result<i64, SyncError> {
+    let mut tx = db.begin().await?;
+
+    for op in ops {
+        applier.apply(op, &mut tx).await?;
+
+        sqlx::query!(
+            "INSERT INTO sync_log (table_name, row_id, payload, updated_at)
+             VALUES ($1, $2, $3, $4)",
+            op.table.as_str(),
+            op.id,
+            op.data,
+            op.updated_at.as_datetime(),
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    let cursor: i64 = sqlx::query_scalar!(
+        // COALESCE is an expression, so nullability can't be inferred:
+        // force it — this query can only return 0 or a real seq.
+        r#"SELECT COALESCE(MAX(seq), 0) as "cursor!" FROM sync_log"#,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(cursor)
+}
+
+/// Full state for a far-behind client, wire-shaped: the generic
+/// [`load_or_build_snapshot`] pipeline mapped onto the workspace's DTOs.
+/// The lib is coupled to `shared` for the wire DTOs (accepted tension) —
+/// a second app maps onto its own instead.
+async fn snapshot_msg<S: SnapshotSource<Table>>(
+    db: &PgPool,
+    source: &S,
+) -> Result<ServerMsg, SyncError> {
+    let (seq, tables, tombstones) = load_or_build_snapshot::<Table, S>(db, source).await?;
+    Ok(ServerMsg::Snapshot {
+        seq,
+        tables: tables
+            .into_iter()
+            .map(|rows| TableData {
+                table: rows.table,
+                rows: rows.rows,
+            })
+            .collect(),
+        tombstones,
+    })
+}
+
+/// Per-connection protocol decisions, transport-free: everything a
+/// backend's WS loop needs EXCEPT the sockets. Holds the app's plug-ins
+/// (apply arms + snapshot extraction) at construction, so the transport
+/// loop stays a thin `select!` over [`Session::on_text`] and its ticker.
+pub struct Session<A: OpApply, S: SnapshotSource<Table>> {
+    applier: A,
+    source: S,
+    // One snapshot per connection, max: a follow-up Pull replays events
+    // instead, otherwise a stale snapshot and the backlog would ping-pong.
+    snapshotted: bool,
+}
+
+impl<A: OpApply, S: SnapshotSource<Table>> Session<A, S> {
+    pub fn new(applier: A, source: S) -> Self {
+        Self {
+            applier,
+            source,
+            snapshotted: false,
+        }
+    }
+
+    /// The whole client-message dispatch — parse, Push→Ack, Pull→
+    /// snapshot-or-replay. `Ok(None)` means nothing to send; the
+    /// transport loop logs `Err` and keeps the connection (one poisoned
+    /// message must not kill the stream — at-least-once makes skipping
+    /// harmless).
+    pub async fn on_text(
+        &mut self,
+        db: &PgPool,
+        text: &str,
+    ) -> Result<Option<ServerMsg>, SyncError> {
+        match serde_json::from_str::<ClientMsg>(text)? {
+            ClientMsg::Push { ops } => {
+                let cursor = push(db, &ops, &self.applier).await?;
+                Ok(Some(ServerMsg::Ack { cursor }))
+            }
+            ClientMsg::Pull { since } => {
+                // Far behind? Replay would be one upsert per logged op —
+                // hand over a snapshot instead (once per connection; a
+                // follow-up Pull replays events, so snapshot and backlog
+                // can't ping-pong).
+                let head = current_cursor(db).await;
+                if head - since > SNAPSHOT_AFTER_OPS && !self.snapshotted {
+                    self.snapshotted = true;
+                    Ok(Some(snapshot_msg(db, &self.source).await?))
+                } else {
+                    let (events, cursor) = pull_since(db, since).await?;
+                    Ok(Some(ServerMsg::Events { events, cursor }))
+                }
+            }
+        }
+    }
 }

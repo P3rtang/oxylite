@@ -1,33 +1,23 @@
 use shared::delete::OpKind;
-use shared::timestamp::Timestamp;
 use shared::{Op, Table, TableData, Tombstone};
-use sqlx::postgres::PgPool;
-use sync_lib::server::{self, SnapshotSource};
-use thiserror::Error;
+use sqlx::postgres::{PgConnection, PgPool};
+use sync_lib::server::{self, OpApply, SnapshotSource};
+// The lib owns the protocol machinery AND the WS transport; the app
+// plugs in its tables via the two impls below and re-exports the entry
+// points so main.rs and the integration tests keep one module to talk
+// to.
+pub use sync_lib::server::{SyncError, pull_since};
+pub use sync_lib::ws::sync_router;
 
-/// Why a server sync operation failed. Typed so callers match on the shape
-/// of the failure; sources convert with `#[from]`.
-#[derive(Debug, Error)]
-pub enum SyncError {
-    #[error("sql: {0}")]
-    Sql(#[from] sqlx::Error),
-    #[error("json: {0}")]
-    Json(#[from] serde_json::Error),
-}
+/// The app's apply arms — the checked SQL lives at these macro call
+/// sites. Both matches are exhaustive, so a new `Table` variant (or a
+/// new op kind) breaks the build here (same guarantee as the match in
+/// the snapshot extraction).
+#[derive(Clone, Copy)]
+pub struct Apply;
 
-pub use sync_lib::server::{SNAPSHOT_AFTER_OPS, current_cursor};
-
-/// Apply each op to the live tables and append it to the sync log
-/// (server side). A delete is an op like any other — `{table, id,
-/// updated_at, data: null}` — applied as a real DELETE plus a tombstone;
-/// upserts pass the tombstone guard so a stale edit cannot resurrect a
-/// deleted row (the ON CONFLICT LWW guard cannot catch an absent row).
-/// Every op is logged, dropped ones included: the log is the wire
-/// history, guards decide at apply time.
-pub async fn push(db: &PgPool, ops: &[Op]) -> Result<i64, SyncError> {
-    let mut tx = db.begin().await?;
-
-    for op in ops {
+impl OpApply for Apply {
+    async fn apply(&self, op: &Op, tx: &mut PgConnection) -> Result<(), SyncError> {
         // Timestamps arrive as typed `Timestamp`s (validated at the serde
         // boundary when the WS message parsed) — malformed values cannot
         // reach here by type. The columns are `timestamptz` (migration
@@ -96,81 +86,22 @@ pub async fn push(db: &PgPool, ops: &[Op]) -> Result<i64, SyncError> {
             },
         }
 
-        sqlx::query!(
-            "INSERT INTO sync_log (table_name, row_id, payload, updated_at)
-             VALUES ($1, $2, $3, $4)",
-            op.table.as_str(),
-            op.id,
-            op.data,
-            op.updated_at.as_datetime(),
-        )
-        .execute(&mut *tx)
-        .await?;
+        Ok(())
     }
-
-    let cursor: i64 = sqlx::query_scalar!(
-        // COALESCE is an expression, so nullability can't be inferred:
-        // force it — this query can only return 0 or a real seq.
-        r#"SELECT COALESCE(MAX(seq), 0) as "cursor!" FROM sync_log"#,
-    )
-    .fetch_one(&mut *tx)
-    .await?;
-
-    tx.commit().await?;
-    Ok(cursor)
 }
 
-/// Events after `since`, windowed, with the seq the batch reaches.
-pub async fn pull_since(db: &PgPool, since: i64) -> Result<(Vec<Op>, i64), SyncError> {
-    let head: i64 =
-        sqlx::query_scalar!(r#"SELECT COALESCE(MAX(seq), 0) as "head!" FROM sync_log"#,)
-            .fetch_one(db)
-            .await?;
-
-    if since >= head {
-        return Ok((Vec::new(), head));
-    }
-
-    let rows = sqlx::query!(
-        "SELECT seq, table_name, row_id, payload, updated_at
-         FROM sync_log WHERE seq > $1 ORDER BY seq LIMIT 1000",
-        since,
-    )
-    .fetch_all(db)
-    .await?;
-
-    // The cursor is the LAST STREAMED seq, never the head: the batch is a
-    // window into the backlog, and returning the head here let clients
-    // skip every event past the window (their cursor jumped ahead while
-    // the data stayed on the server).
-    let cursor = rows.last().map(|row| row.seq).unwrap_or(head);
-
-    let mut events = Vec::with_capacity(rows.len());
-    for row in rows {
-        // Unknown table names (newer client) are skipped: this server is
-        // the compat boundary and can't apply what it doesn't know.
-        let Some(table) = Table::from_name(&row.table_name) else {
-            continue;
-        };
-        events.push(Op {
-            table,
-            id: row.row_id,
-            data: row.payload,
-            // The op's own timestamp: a delete's payload is null (that
-            // is the marker), so `updated_at` must ride the log row.
-            // Infallible: the column is timestamptz, so the decode is a
-            // real DateTime — the storage layer did the validating.
-            updated_at: Timestamp::from_datetime(row.updated_at),
-        });
-    }
-
-    Ok((events, cursor))
+/// Two-arg shape kept for the binary + the integration tests; the
+/// generic machinery (transaction, per-op logging, cursor) lives in the
+/// lib behind [`OpApply`].
+pub async fn push(db: &PgPool, ops: &[Op]) -> Result<i64, SyncError> {
+    server::push(db, ops, &Apply).await
 }
 
 /// The app's snapshot extraction: the checked SQL lives at these macro
 /// call sites. The match is exhaustive, so a new `Table` variant breaks
-/// the build here (same guarantee as the match in `push`).
-struct Snapshots;
+/// the build here (same guarantee as the match in [`Apply`]).
+#[derive(Clone, Copy)]
+pub struct Snapshots;
 
 impl SnapshotSource<Table> for Snapshots {
     async fn snapshot(&self, table: Table, db: &PgPool) -> Result<serde_json::Value, sqlx::Error> {

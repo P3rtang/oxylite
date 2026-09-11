@@ -5,9 +5,15 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-# Server-side machinery (Postgres via sqlx). Off by default so the wasm
-# client build never pulls sqlx; the backend enables it.
+# Server-side protocol machinery (Postgres via sqlx). Off by default so
+# the wasm client build never pulls sqlx; the backend enables it.
 server = ["dep:sqlx", "dep:enum-iterator"]
+# The WS transport, axum flavor: one drop-in route for any axum
+# backend. Framework mounts are separate features by design — a future
+# actix backend would add its own module over the same `server` core
+# (reviewer decision, #28 r2), so the core never grows a dependency on
+# one web framework.
+axum = ["server", "dep:axum", "dep:tokio"]
 
 [dependencies]
 shared = { path = "../shared" }
@@ -29,6 +35,8 @@ web-sys = { version = "0.3", features = [
     "Lock",
 ] }
 thiserror = "2"
+axum = { version = "0.8", features = ["ws"], optional = true }
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"], optional = true }
 sqlx = { version = "0.8", optional = true, features = [
     "runtime-tokio",
     "postgres",
