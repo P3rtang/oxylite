@@ -3,6 +3,7 @@
 
 use crate::engine::EngineError;
 use crate::pglite::Pglite;
+use crate::delete::OpExt;
 
 use shared::timestamp::Timestamp;
 use shared::{Op, Table, Tombstone};
@@ -275,7 +276,7 @@ where
     let mut skipped: Vec<String> = Vec::new();
     for op in ops {
         match op.kind() {
-            shared::delete::OpKind::Delete => {
+            crate::delete::OpKind::Delete => {
                 if !last.contains_key(&op.id) {
                     order.push(op.id);
                 }
@@ -303,7 +304,7 @@ where
                 };
                 last.insert(op.id, next);
             }
-            shared::delete::OpKind::Upsert => {
+            crate::delete::OpKind::Upsert => {
                 match serde_json::from_value::<T>(op.data.clone()) {
                     Ok(row) => {
                         let pk = row.pk();

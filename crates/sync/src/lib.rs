@@ -18,6 +18,8 @@
 //! separate features by design — a future actix backend would add its
 //! own module over the same core.
 
+pub mod delete;
+
 pub mod engine;
 pub mod pglite;
 pub mod query;

@@ -1,4 +1,5 @@
-use shared::delete::OpKind;
+use sync_lib::delete::OpExt;
+use sync_lib::delete::OpKind;
 use shared::{Op, Table, TableData, Tombstone};
 use sqlx::postgres::{PgConnection, PgPool};
 use sync_lib::server::{self, OpApply, SnapshotSource};

@@ -1,4 +1,3 @@
-pub mod delete;
 pub mod timestamp;
 
 pub use timestamp::{Timestamp, TimestampError};

@@ -5,10 +5,10 @@
 //! logic, and the SQL sides are pinned elsewhere (server sqlx::tests,
 //! client e2e, client SQL prepare-checks).
 
-use shared::delete::{OpKind, tombstone_allows};
 use shared::timestamp::Timestamp;
 use shared::{Op, Table};
 use std::collections::HashMap;
+use sync::delete::{OpExt, OpKind, tombstone_allows};
 use uuid::Uuid;
 
 /// Parse in the helper: test fixtures get the same validation the wire

@@ -1,13 +1,15 @@
 //! Delete semantics: how an `Op` maps onto storage, and whether a write
-//! may proceed past a tombstone. Shared by the server's apply path and
-//! the client's applier so both sides decide identically.
+//! may proceed past a tombstone. The lib owns the decision so the
+//! server's apply path and the client's applier decide identically —
+//! moved here from `shared` (#29): it names no table, and every
+//! consuming app needs the same rules.
 //!
 //! A delete is **an op like any other** — `{ table, id, updated_at,
 //! data: null }` on the existing Push path. The null payload is the
 //! marker: there is no row state to ship, only the fact of removal.
 
-use crate::Op;
-use crate::timestamp::Timestamp;
+use shared::Op;
+use shared::Timestamp;
 
 /// Whether an `Op` upserts row state or deletes its row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,9 +18,17 @@ pub enum OpKind {
     Delete,
 }
 
-impl Op {
+/// The kind dispatch as a local extension trait: an inherent `impl Op`
+/// cannot move here (orphan rule — `Op` is `shared`'s), and `OpKind`
+/// must stay lib-side next to the semantics that consume it. Same
+/// placement pattern as `SyncTable for shared::Table`.
+pub trait OpExt {
     /// `data: null` ⇒ delete; anything else is row state (upsert).
-    pub fn kind(&self) -> OpKind {
+    fn kind(&self) -> OpKind;
+}
+
+impl OpExt for Op {
+    fn kind(&self) -> OpKind {
         if self.data.is_null() {
             OpKind::Delete
         } else {
