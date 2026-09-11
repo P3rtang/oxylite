@@ -210,6 +210,20 @@ test("an offline delete loses to an unseen newer edit — the note resurrects ev
     timeout: 30_000,
   });
   await ctxB.close();
+
+  // Cleanup: the +1h seed makes this row undeletable by real-time
+  // deletes for an hour — a manual Remove loses the LWW check (by
+  // design). Out-stamp it (+2h delete op) so the shared dev DB does
+  // not accumulate haunted notes; every client drops it on replay.
+  psql(
+    `WITH gone AS (` +
+      ` DELETE FROM notes WHERE title = '${stamp} edited' RETURNING id` +
+      `), t AS (` +
+      ` INSERT INTO oxylite.tombstones (table_name, id, deleted_at)` +
+      ` SELECT 'notes', id, (now() + interval '2 hours')::timestamptz FROM gone` +
+      `) INSERT INTO oxylite.sync_log (table_name, row_id, payload, updated_at)` +
+      ` SELECT 'notes', id, 'null'::jsonb, (now() + interval '2 hours')::timestamptz FROM gone;`,
+  );
 });
 
 test("concurrent offline deletes of the same note converge — deleted everywhere", async ({
