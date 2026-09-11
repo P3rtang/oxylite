@@ -5,7 +5,7 @@
 //! stays UI-agnostic.
 
 use dioxus::prelude::*;
-use sync::engine::timer_pause;
+use oxylite::engine::timer_pause;
 use std::fmt::Display;
 use uuid::Uuid;
 

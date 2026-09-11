@@ -6,7 +6,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 VERSION="${1:-0.5.8}"
-DEST="$ROOT/crates/sync/assets/pglite"
+DEST="$ROOT/crates/oxylite/assets/pglite"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

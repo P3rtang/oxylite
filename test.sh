@@ -46,8 +46,8 @@ lint() {
     blue "clippy (host)…"
     cargo clippy --workspace --all-targets -- -D warnings
 
-    blue "clippy (wasm: sync + client)…"
-    cargo clippy -q -p sync --target wasm32-unknown-unknown -- -D warnings
+    blue "clippy (wasm: oxylite + client)…"
+    cargo clippy -q -p oxylite --target wasm32-unknown-unknown -- -D warnings
     cargo clippy -q -p client --target wasm32-unknown-unknown -- -D warnings
 
     blue "cargo test --workspace…"

@@ -56,7 +56,7 @@ stay clean). Current inventory:
 
 - `shared/tests/delete_semantics.rs` — delete/tombstone contracts in
   pure code + the in-memory reference model
-- `sync/tests/sql_shapes.rs` — exact-shape pins for generated client SQL
+- `oxylite/tests/sql_shapes.rs` — exact-shape pins for generated client SQL
 - `server/tests/delete_contracts.rs` — sqlx::test against real
   Postgres (runtime queries, no macros — test targets don't own
   `.sqlx` entries)

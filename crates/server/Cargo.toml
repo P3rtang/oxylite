@@ -6,7 +6,7 @@ edition = "2024"
 
 [dependencies]
 shared = { path = "../shared" }
-sync_lib = { path = "../sync", package = "sync", features = ["server", "axum"] }
+oxylite = { path = "../oxylite", features = ["server", "axum"] }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "json", "migrate", "chrono"] }

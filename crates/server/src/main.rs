@@ -1,7 +1,7 @@
 use axum::{Router, routing::get};
 // The binary is thin on purpose: routes + serving; the sync machinery
 // (session decisions + WS transport) lives in the lib targets
-// (crates/sync, features `server` + `axum`), the app's table plug-ins
+// (crates/oxylite, features `server` + `axum`), the app's table plug-ins
 // in crates/server/src/sync.rs.
 use server::sync;
 
@@ -30,7 +30,7 @@ async fn main() {
             "/pglite",
             tower_http::services::ServeDir::new(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../sync/assets/pglite"
+                "/../oxylite/assets/pglite"
             ))
             .append_index_html_on_directories(false),
         )

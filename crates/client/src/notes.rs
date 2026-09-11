@@ -6,9 +6,9 @@
 
 use std::rc::Rc;
 
-use sync::engine::RowSink;
-use sync::pglite::Pglite;
-use sync::query::apply_ops;
+use oxylite::engine::RowSink;
+use oxylite::pglite::Pglite;
+use oxylite::query::apply_ops;
 pub use shared::Note;
 use shared::Timestamp;
 use shared::{Op, Table};

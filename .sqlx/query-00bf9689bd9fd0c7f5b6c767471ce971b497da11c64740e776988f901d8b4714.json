@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT seq,\n                  COALESCE(EXTRACT(EPOCH FROM (now() - created_at)), 0)::bigint as \"age_sec!\"\n           FROM snapshots ORDER BY seq DESC LIMIT 1",
+  "query": "SELECT seq,\n                  COALESCE(EXTRACT(EPOCH FROM (now() - created_at)), 0)::bigint as \"age_sec!\"\n           FROM oxylite.snapshots ORDER BY seq DESC LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -22,5 +22,5 @@
       null
     ]
   },
-  "hash": "eb8387fb91c16a31f7c24527fde11c7351fe24ed5896dc277b4c17c8f989b7d0"
+  "hash": "00bf9689bd9fd0c7f5b6c767471ce971b497da11c64740e776988f901d8b4714"
 }

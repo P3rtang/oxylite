@@ -7,8 +7,8 @@
 //! client-only (feature `client`).
 
 use crate::Table;
-use sync::sync_row::SyncRow;
-use sync::timestamp::Timestamp;
+use oxylite::sync_row::SyncRow;
+use oxylite::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -48,8 +48,8 @@ mod client {
     //! Rows come back as JS objects; Note knows how to build itself.
 
     use super::Note;
-    use sync::from_row::{FromRow, Row, RowError, str_field};
-    use sync::timestamp::Timestamp;
+    use oxylite::from_row::{FromRow, Row, RowError, str_field};
+    use oxylite::timestamp::Timestamp;
 
     impl FromRow for Note {
         fn from_row(row: &Row) -> Result<Self, RowError> {
@@ -81,7 +81,7 @@ mod server {
     //! the validating).
 
     use super::Note;
-    use sync::timestamp::Timestamp;
+    use oxylite::timestamp::Timestamp;
 
     impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Note {
         fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {

@@ -1,5 +1,5 @@
 //! Build script: generate the DEMO app's migration list by scanning the
-//! lib's protocol-table migrations (`../sync/migrations`) and this
+//! lib's protocol-table migrations (`../oxylite/migrations`) and this
 //! crate's app-table migrations (`migrations/`) at compile time, merged
 //! by version — a new migration file needs no hand-edit of `lib.rs` (a
 //! forgotten entry would make the server apply a migration the client
@@ -20,7 +20,7 @@ fn main() {
         Path::new(&manifest).join("migrations"),
         // The lib's own protocol-table migrations — part of the union
         // because the demo client boots PGlite with ONE list.
-        Path::new(&manifest).join("../sync/migrations"),
+        Path::new(&manifest).join("../oxylite/migrations"),
     ];
     for dir in &dirs {
         // Recursive: a file added, removed, renamed or edited inside the

@@ -101,7 +101,7 @@ against the migrated schema).
 
 ## Path to a library
 
-`crates/sync` is the library candidate (engine, protocol, PGlite
+`crates/oxylite` is the library candidate (engine, protocol, PGlite
 bridge, query layer); the notes app is the proof vehicle. Done:
 single-source migrations applied on both sides, offline-first with a
 durable op log, multi-tab single-writer, deletes/tombstones, snapshots

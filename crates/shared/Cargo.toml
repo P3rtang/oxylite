@@ -8,7 +8,7 @@ edition = "2024"
 # Side seams: `client` turns on the lib's wasm machinery (the JS-row
 # decode lives in sync's `client` feature) so Note's FromRow impl can
 # compile; `server` pulls sqlx for Note's sqlx::FromRow impl.
-client = ["sync/client"]
+client = ["oxylite/client"]
 server = ["dep:sqlx"]
 
 [dependencies]
@@ -19,7 +19,7 @@ serde_json = "1"
 # The lib owns the protocol now (#31): DTOs, Timestamp, SyncRow,
 # SyncTable. Core only — this crate never pulls sync's wasm machinery
 # unless the `client` feature asks for it.
-sync = { path = "../sync", default-features = false }
+oxylite = { path = "../oxylite", default-features = false }
 # Parsing/canonicalizing only (no clock): `Utc::now` is platform-specific
 # (the client's clock is js_sys::Date), so the type parses what a
 # producer hands it — it never reads the clock itself.

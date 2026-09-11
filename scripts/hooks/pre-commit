@@ -15,7 +15,7 @@ source "$(dirname "$0")/../common.sh"
 cd "$ROOT"
 
 # Cheap skip: nothing staged that checked queries depend on.
-[ -n "$(git diff --cached --name-only -- crates/server crates/sync crates/shared/migrations)" ] || exit 0
+[ -n "$(git diff --cached --name-only -- crates/server crates/oxylite crates/shared/migrations)" ] || exit 0
 
 if ! pg_isready -h localhost -p 5432 >/dev/null 2>&1; then
     red "sqlx pre-commit: postgres is down, can't refresh .sqlx"

@@ -8,11 +8,11 @@
 //! the checked macros live in the library, and keeping this file
 //! macro-free means no `.sqlx` entries depend on a test target.
 
+use oxylite::delete::{OpExt, OpKind};
 use server::sync::{load_or_build_snapshot, pull_since, push};
 use shared::Timestamp;
 use shared::{Op, Table};
 use sqlx::types::chrono::{DateTime, Utc};
-use sync_lib::delete::{OpExt, OpKind};
 use uuid::Uuid;
 
 /// Parse in the helper: fixtures validate like the wire does.

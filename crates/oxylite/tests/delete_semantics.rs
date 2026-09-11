@@ -11,10 +11,10 @@
 //! nothing but `sync` itself.
 
 use enum_iterator::Sequence;
-use sync::delete::{OpExt, OpKind, tombstone_allows};
-use sync::protocol::Op;
-use sync::table::SyncTable;
-use sync::timestamp::Timestamp;
+use oxylite::delete::{OpExt, OpKind, tombstone_allows};
+use oxylite::protocol::Op;
+use oxylite::table::SyncTable;
+use oxylite::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;

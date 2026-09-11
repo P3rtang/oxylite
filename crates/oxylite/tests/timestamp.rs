@@ -5,7 +5,7 @@
 //! a typed error carrying the offending string. The serde path validates
 //! too — it IS the wire boundary.
 
-use sync::timestamp::{Timestamp, TimestampError};
+use oxylite::timestamp::{Timestamp, TimestampError};
 use uuid::Uuid;
 
 // Fixture table (#31): the suite instantiates the protocol standalone.
@@ -18,9 +18,9 @@ enum FixtureTable {
     Notes,
 }
 
-type Op = sync::protocol::Op<FixtureTable>;
+type Op = oxylite::protocol::Op<FixtureTable>;
 
-impl sync::table::SyncTable for FixtureTable {
+impl oxylite::table::SyncTable for FixtureTable {
     fn as_str(self) -> &'static str {
         "notes"
     }

@@ -1,13 +1,13 @@
-pub use sync_lib::server::SyncRowSnapshots;
-use sync_lib::server::{self, OpApply};
+pub use oxylite::server::SyncRowSnapshots;
+use oxylite::server::{self, OpApply};
 use shared::{Note, Op, Table, TableData, Tombstone};
 use sqlx::postgres::PgPool;
 // The lib owns the protocol machinery AND the WS transport; the app
 // plugs in its tables via the impls below and re-exports the entry
 // points so main.rs and the integration tests keep one module to talk
 // to.
-pub use sync_lib::server::{SyncError, pull_since};
-pub use sync_lib::ws::sync_router;
+pub use oxylite::server::{SyncError, pull_since};
+pub use oxylite::ws::sync_router;
 
 /// One migrator over the UNION list (the lib's protocol tables + this
 /// app's tables — `shared::MIGRATIONS` is the merged list shared's

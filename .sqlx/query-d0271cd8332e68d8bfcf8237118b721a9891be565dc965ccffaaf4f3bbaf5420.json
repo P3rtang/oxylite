@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT table_name, seq, data FROM snapshots ORDER BY table_name",
+  "query": "SELECT table_name, id, deleted_at FROM oxylite.tombstones ORDER BY table_name, id",
   "describe": {
     "columns": [
       {
@@ -10,13 +10,13 @@
       },
       {
         "ordinal": 1,
-        "name": "seq",
-        "type_info": "Int8"
+        "name": "id",
+        "type_info": "Uuid"
       },
       {
         "ordinal": 2,
-        "name": "data",
-        "type_info": "Jsonb"
+        "name": "deleted_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
@@ -28,5 +28,5 @@
       false
     ]
   },
-  "hash": "5a22358059bf91d3dc574433b130350a556515c072e07ccc296fe172cabaae36"
+  "hash": "d0271cd8332e68d8bfcf8237118b721a9891be565dc965ccffaaf4f3bbaf5420"
 }

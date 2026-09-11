@@ -11,7 +11,7 @@
 pub mod note;
 
 pub use note::Note;
-pub use sync::{SyncRow, SyncTable, Timestamp, TimestampError};
+pub use oxylite::{SyncRow, SyncTable, Timestamp, TimestampError};
 
 use enum_iterator::Sequence;
 use serde::{Deserialize, Serialize};
@@ -48,20 +48,20 @@ impl SyncTable for Table {
 // ---- concrete protocol aliases (this app's instantiation) ----
 
 /// An operation the client pushes, or the server replays from sync_log.
-pub type Op = sync::protocol::Op<Table>;
+pub type Op = oxylite::protocol::Op<Table>;
 
 /// Client -> server.
-pub type ClientMsg = sync::protocol::ClientMsg<Table>;
+pub type ClientMsg = oxylite::protocol::ClientMsg<Table>;
 
 /// Server -> client.
-pub type ServerMsg = sync::protocol::ServerMsg<Table>;
+pub type ServerMsg = oxylite::protocol::ServerMsg<Table>;
 
 /// One table's snapshot: every live row, payload-shaped.
-pub type TableData = sync::protocol::TableData<Table>;
+pub type TableData = oxylite::protocol::TableData<Table>;
 
 /// A recorded deletion, riding the Snapshot (lib-owned type; the docs
 /// live on the generic definition).
-pub type Tombstone = sync::protocol::Tombstone<Table>;
+pub type Tombstone = oxylite::protocol::Tombstone<Table>;
 
 // The demo app's MIGRATION LIST is generated at build time (see
 // build.rs): the UNION of the lib's protocol-table migrations

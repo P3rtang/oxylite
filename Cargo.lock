@@ -314,10 +314,10 @@ dependencies = [
  "console_error_panic_hook",
  "dioxus",
  "js-sys",
+ "oxylite",
  "serde",
  "serde_json",
  "shared",
- "sync",
  "uuid",
 ]
 
@@ -2291,6 +2291,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "oxylite"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "dioxus",
+ "enum-iterator",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2949,10 +2969,10 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "enum-iterator",
+ "oxylite",
  "serde_json",
  "shared",
  "sqlx",
- "sync",
  "tokio",
  "tower-http",
  "uuid",
@@ -2995,10 +3015,10 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "enum-iterator",
+ "oxylite",
  "serde",
  "serde_json",
  "sqlx",
- "sync",
  "thiserror 2.0.20",
  "uuid",
 ]
@@ -3379,26 +3399,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "sync"
-version = "0.1.0"
-dependencies = [
- "axum",
- "chrono",
- "dioxus",
- "enum-iterator",
- "js-sys",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror 2.0.20",
- "tokio",
- "uuid",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]

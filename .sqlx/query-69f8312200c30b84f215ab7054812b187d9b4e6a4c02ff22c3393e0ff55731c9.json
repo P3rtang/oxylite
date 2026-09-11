@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT COALESCE(MAX(seq), 0) as \"cursor!\" FROM sync_log",
+  "query": "SELECT COALESCE(MAX(seq), 0) as \"head!\" FROM oxylite.sync_log",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "cursor!",
+        "name": "head!",
         "type_info": "Int8"
       }
     ],
@@ -16,5 +16,5 @@
       null
     ]
   },
-  "hash": "43269eb7ed36b86dd6f626e749b1d2c3aacae8ed9479e6069f8fd957c1984490"
+  "hash": "69f8312200c30b84f215ab7054812b187d9b4e6a4c02ff22c3393e0ff55731c9"
 }
