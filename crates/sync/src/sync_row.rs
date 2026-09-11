@@ -1,29 +1,40 @@
-//! The synced-row contract, SHARED between the sides (moved from sync,
-//! #30): one `COLUMNS` list is the single source of truth for every
-//! statement on both ends — the client's engine and the server's apply
-//! path execute the SAME generated SQL, so a hand-written copy can never
-//! drift again (that drift shipped once: a SELECT missing a column the
-//! row mapping read). Pure string building — no sqlx, no js — so the
-//! trait compiles in every graph; side-specific decoding lives behind
-//! the crate features (see `from_row`, `note`).
+//! The synced-row contract, back in the lib (#31): one `COLUMNS` list is
+//! the single source of truth for every statement on both ends — the
+//! client's engine and the server's apply path execute the SAME
+//! generated SQL, so a hand-written copy can never drift again (that
+//! drift shipped once: a SELECT missing a column the row mapping read).
+//! Pure string building — no sqlx, no js — so the trait compiles in
+//! every graph; side-specific decoding lives behind features (see
+//! `from_row`). App crates implement this for their row types (one
+//! declaration feeds both appliers, #30); the lib only consumes it
+//! generically and never names a row (boundary rule 1).
 //!
 //! SQL is generated, not abstracted away: defaults are plain Rust
 //! defaults, so anything bespoke (joined views, filtered lists) overrides
 //! them or hands its own hand-written `Query` to `use_query`. Dynamic
-//! dispatch stays at the `Table` enum boundary; this trait is the
-//! generic side.
+//! dispatch stays at the table/sink boundary; this trait is the generic
+//! side.
 
-use crate::Table;
+use crate::table::{SyncTable, SyncTableWire};
 use uuid::Uuid;
 
 /// The contract a synced row type fulfills. Reads are a separate
 /// contract (`FromRow`, client feature) — decoding is side-specific,
-/// while this trait is what both sides share.
+/// while this trait is what both sides share. The table carries the
+/// wire serde (`SyncTableWire`) because the row feeds the engine's
+/// generic message paths, not just SQL generation.
 pub trait SyncRow: Sized {
-    /// The synced table this row type belongs to.
-    const TABLE: Table;
+    /// The synced table this row type belongs to (the app's own enum —
+    /// the lib never names one).
+    type Table: SyncTableWire;
+
+    /// The synced table's identity, for SQL generation and
+    /// invalidation.
+    const TABLE: Self::Table;
+
     /// Column names in bind order — feeds every generated statement.
     const COLUMNS: &'static [&'static str];
+
     /// Column compared for last-write-wins (`EXCLUDED.c > t.c`); `None`
     /// means batch order decides. Deletion needs this axis too: the
     /// tombstone guard compares a write's timestamp against the row's
@@ -33,6 +44,7 @@ pub trait SyncRow: Sized {
     /// the generated SQL binds it with an explicit `::timestamptz` cast
     /// wherever it flows through VALUES aliases.
     const LWW: Option<&'static str> = None;
+
     /// Primary key column name.
     const PK: &'static str = "id";
 

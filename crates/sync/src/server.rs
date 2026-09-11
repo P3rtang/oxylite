@@ -5,47 +5,23 @@
 //! and implement [`SnapshotSource`] for the per-table extraction (which
 //! stays app-side: that's where the sqlx macros can see the SQL literals,
 //! and where the exhaustive match forces new tables to be handled).
-//! The `sync_log`/`snapshots` schema comes from the shared migrations.
+//! The `sync_log`/`snapshots` schema comes from the lib's own migrations.
 
-use enum_iterator::{Sequence, all};
-use shared::{ClientMsg, Op, ServerMsg, SyncRow, Table, TableData, Timestamp};
+use enum_iterator::all;
 use sqlx::postgres::{PgConnection, PgPool};
 use std::future::Future;
+use std::marker::PhantomData;
 use thiserror::Error;
 
 use crate::delete::{OpExt, OpKind};
-
-/// A synced table, as the machinery sees it. The implementing repo's
-/// table enum derives `Sequence` (so a new variant joins every loop
-/// automatically) and implements this for its wire names.
-pub trait SyncTable: Copy + Sequence {
-    /// The wire name stored in `sync_log.table_name` and
-    /// `snapshots.table_name`; must stay stable across releases.
-    fn as_str(self) -> &'static str;
-
-    /// Inverse of [`SyncTable::as_str`]. Returning `None` means "unknown
-    /// here" (a table from a newer client): replaying sites skip it —
-    /// this side is the compat boundary and can't apply what it doesn't
-    /// know.
-    fn from_name(name: &str) -> Option<Self>;
-}
-
-/// This workspace's table type (the lib is coupled to `shared` for the
-/// wire DTOs anyway). Other projects implement [`SyncTable`] for their
-/// own enum instead.
-impl SyncTable for Table {
-    fn as_str(self) -> &'static str {
-        Table::as_str(self)
-    }
-
-    fn from_name(name: &str) -> Option<Self> {
-        Table::from_name(name)
-    }
-}
+use crate::protocol::{ClientMsg, Op, ServerMsg, TableData, Tombstone};
+use crate::sync_row::SyncRow;
+use crate::table::{SyncTable, SyncTableWire};
+use crate::timestamp::Timestamp;
 
 /// Per-table snapshot extraction, implemented app-side where the checked
 /// SQL lives. The match on the table is the compile guarantee: exhaustive,
-/// so a new `Table` variant breaks the build until its arm exists.
+/// so a new table variant breaks the build until its arm exists.
 ///
 /// The future is `Send` on purpose: the whole snapshot pipeline must stay
 /// `tokio::spawn`-able for backend runtimes that need it (impls use plain
@@ -127,7 +103,7 @@ pub async fn rebuild_snapshots<T: SyncTable, S: SnapshotSource<T>>(
 pub async fn load_or_build_snapshot<T: SyncTable, S: SnapshotSource<T>>(
     db: &PgPool,
     source: &S,
-) -> Result<(i64, Vec<TableRows<T>>, Vec<shared::Tombstone>), sqlx::Error> {
+) -> Result<(i64, Vec<TableRows<T>>, Vec<Tombstone<T>>), sqlx::Error> {
     let head = current_cursor(db).await;
 
     let stored = sqlx::query!(
@@ -165,10 +141,9 @@ pub async fn load_or_build_snapshot<T: SyncTable, S: SnapshotSource<T>>(
         })
         .collect();
 
-    // Tombstones are the lib's own table, mapped onto the workspace's wire
-    // table type (the lib is coupled to `shared` for the wire DTOs).
-    // Unknown table names (from a newer client) are skipped: this side is
-    // the compat boundary.
+    // Tombstones are the lib's own table, mapped onto the caller's table
+    // type via `T::from_name`. Unknown table names (from a newer client)
+    // are skipped: this side is the compat boundary.
     let tombstone_rows =
         sqlx::query!("SELECT table_name, id, deleted_at FROM tombstones ORDER BY table_name, id")
             .fetch_all(db)
@@ -177,15 +152,15 @@ pub async fn load_or_build_snapshot<T: SyncTable, S: SnapshotSource<T>>(
     for row in tombstone_rows {
         // Unknown table names (from a newer client) are skipped: this
         // side is the compat boundary.
-        let Some(table) = shared::Table::from_name(&row.table_name) else {
+        let Some(table) = T::from_name(&row.table_name) else {
             continue;
         };
         // Infallible: the column is timestamptz, so the decode is a real
         // DateTime — the storage layer did the validating.
-        tombstones.push(shared::Tombstone {
+        tombstones.push(Tombstone {
             table,
             id: row.id,
-            deleted_at: shared::Timestamp::from_datetime(row.deleted_at),
+            deleted_at: Timestamp::from_datetime(row.deleted_at),
         });
     }
 
@@ -205,9 +180,12 @@ pub enum SyncError {
 
 /// Events after `since`, windowed, with the seq the batch reaches.
 /// Protocol machinery, not app code: this touches only `sync_log` —
-/// the log's schema is the lib's own (shared migrations), so the whole
+/// the log's schema is the lib's own (lib migrations), so the whole
 /// read path is generic. Only the apply path is per-table.
-pub async fn pull_since(db: &PgPool, since: i64) -> Result<(Vec<Op>, i64), SyncError> {
+pub async fn pull_since<T: SyncTable>(
+    db: &PgPool,
+    since: i64,
+) -> Result<(Vec<Op<T>>, i64), SyncError> {
     let head: i64 =
         sqlx::query_scalar!(r#"SELECT COALESCE(MAX(seq), 0) as "head!" FROM sync_log"#,)
             .fetch_one(db)
@@ -235,7 +213,7 @@ pub async fn pull_since(db: &PgPool, since: i64) -> Result<(Vec<Op>, i64), SyncE
     for row in rows {
         // Unknown table names (newer client) are skipped: this server is
         // the compat boundary and can't apply what it doesn't know.
-        let Some(table) = Table::from_name(&row.table_name) else {
+        let Some(table) = T::from_name(&row.table_name) else {
             continue;
         };
         events.push(Op {
@@ -261,14 +239,14 @@ pub async fn pull_since(db: &PgPool, since: i64) -> Result<(Vec<Op>, i64), SyncE
 /// The future is `Send` on purpose (same as [`SnapshotSource`]): the
 /// push path must stay `tokio::spawn`-able; impls use plain `async fn`
 /// and are checked at the impl.
-pub trait OpApply {
+pub trait OpApply<T: SyncTable> {
     /// Apply one op to the app's live tables, inside `push`'s
     /// transaction. `push` logs the op AFTER this returns, whatever the
     /// apply decided (dropped guards included): the log is the wire
     /// history, guards decide at apply time.
     fn apply(
         &self,
-        op: &Op,
+        op: &Op<T>,
         tx: &mut PgConnection,
     ) -> impl Future<Output = Result<(), SyncError>> + Send;
 }
@@ -278,7 +256,11 @@ pub trait OpApply {
 /// log is generic). A delete is an op like any other — `{table, id,
 /// updated_at, data: null}` — and is logged whatever the apply decided:
 /// the log is the wire history, guards decide at apply time.
-pub async fn push<A: OpApply>(db: &PgPool, ops: &[Op], applier: &A) -> Result<i64, SyncError> {
+pub async fn push<T: SyncTable, A: OpApply<T>>(
+    db: &PgPool,
+    ops: &[Op<T>],
+    applier: &A,
+) -> Result<i64, SyncError> {
     let mut tx = db.begin().await?;
 
     for op in ops {
@@ -309,14 +291,13 @@ pub async fn push<A: OpApply>(db: &PgPool, ops: &[Op], applier: &A) -> Result<i6
 }
 
 /// Full state for a far-behind client, wire-shaped: the generic
-/// [`load_or_build_snapshot`] pipeline mapped onto the workspace's DTOs.
-/// The lib is coupled to `shared` for the wire DTOs (accepted tension) —
-/// a second app maps onto its own instead.
-async fn snapshot_msg<S: SnapshotSource<Table>>(
+/// [`load_or_build_snapshot`] pipeline mapped onto the protocol's own
+/// DTOs — now generic (#31), so this maps directly with no per-app glue.
+async fn snapshot_msg<T: SyncTable, S: SnapshotSource<T>>(
     db: &PgPool,
     source: &S,
-) -> Result<ServerMsg, SyncError> {
-    let (seq, tables, tombstones) = load_or_build_snapshot::<Table, S>(db, source).await?;
+) -> Result<ServerMsg<T>, SyncError> {
+    let (seq, tables, tombstones) = load_or_build_snapshot::<T, S>(db, source).await?;
     Ok(ServerMsg::Snapshot {
         seq,
         tables: tables
@@ -333,7 +314,7 @@ async fn snapshot_msg<S: SnapshotSource<Table>>(
 /// Apply one op to a SyncRow table on the host. The payload parses into
 /// the caller's row type and the statements are the SAME SyncRow
 /// defaults the client's engine executes — one declaration (`impl
-/// SyncRow for ...` in `shared`) feeds both sides, so a hand-written
+/// SyncRow for ...` in the app) feeds both sides, so a hand-written
 /// server copy can never drift (reviewer goal, #30: a new table is one
 /// row impl + one match arm). Runtime API on purpose: the SQL is
 /// generated per table (a checked macro could never be generic over the
@@ -345,7 +326,7 @@ async fn snapshot_msg<S: SnapshotSource<Table>>(
 /// Binds are the row's own string params; the generated casts
 /// (`$N::uuid`, `$N::timestamptz`) type them against the real columns —
 /// identical to how PGlite binds them.
-pub async fn apply_one<T>(op: &Op, tx: &mut PgConnection) -> Result<(), SyncError>
+pub async fn apply_one<T>(op: &Op<T::Table>, tx: &mut PgConnection) -> Result<(), SyncError>
 where
     T: SyncRow + serde::de::DeserializeOwned,
 {
@@ -390,7 +371,7 @@ async fn exec_binds(
 #[derive(Clone, Copy)]
 pub struct SyncRowSnapshots;
 
-impl<T: SyncTable + Send> SnapshotSource<T> for SyncRowSnapshots {
+impl<T: SyncTable> SnapshotSource<T> for SyncRowSnapshots {
     async fn snapshot(&self, table: T, db: &PgPool) -> Result<serde_json::Value, sqlx::Error> {
         sqlx::query_scalar::<_, serde_json::Value>(&format!(
             "SELECT COALESCE(jsonb_agg(row_to_json(n)), '[]'::jsonb) \
@@ -406,20 +387,24 @@ impl<T: SyncTable + Send> SnapshotSource<T> for SyncRowSnapshots {
 /// backend's WS loop needs EXCEPT the sockets. Holds the app's plug-ins
 /// (apply arms + snapshot extraction) at construction, so the transport
 /// loop stays a thin `select!` over [`Session::on_text`] and its ticker.
-pub struct Session<A: OpApply, S: SnapshotSource<Table>> {
+pub struct Session<T: SyncTableWire, A: OpApply<T>, S: SnapshotSource<T>> {
     applier: A,
     source: S,
     // One snapshot per connection, max: a follow-up Pull replays events
     // instead, otherwise a stale snapshot and the backlog would ping-pong.
     snapshotted: bool,
+    // `T` appears only in the trait bounds — the session speaks
+    // `ServerMsg<T>` — so the type parameter is pinned with a marker.
+    _table: PhantomData<T>,
 }
 
-impl<A: OpApply, S: SnapshotSource<Table>> Session<A, S> {
+impl<T: SyncTableWire, A: OpApply<T>, S: SnapshotSource<T>> Session<T, A, S> {
     pub fn new(applier: A, source: S) -> Self {
         Self {
             applier,
             source,
             snapshotted: false,
+            _table: PhantomData,
         }
     }
 
@@ -432,8 +417,8 @@ impl<A: OpApply, S: SnapshotSource<Table>> Session<A, S> {
         &mut self,
         db: &PgPool,
         text: &str,
-    ) -> Result<Option<ServerMsg>, SyncError> {
-        match serde_json::from_str::<ClientMsg>(text)? {
+    ) -> Result<Option<ServerMsg<T>>, SyncError> {
+        match serde_json::from_str::<ClientMsg<T>>(text)? {
             ClientMsg::Push { ops } => {
                 let cursor = push(db, &ops, &self.applier).await?;
                 Ok(Some(ServerMsg::Ack { cursor }))

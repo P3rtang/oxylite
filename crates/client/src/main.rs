@@ -8,15 +8,15 @@ mod notify;
 use dioxus::prelude::*;
 use notes::{Note, display_time, new_note, notes_sink, op_for_delete, op_for_note};
 use notify::{Notice, NoticeOverlay, notify};
-use shared::SyncRow;
-use shared::Table;
 use sync::engine::{self, EngineError, engine};
 use sync::query::use_select_all;
+use shared::SyncRow;
+use shared::Table;
 
 fn main() {
     console_error_panic_hook::set_once();
-    engine::init(shared::MIGRATIONS);
-    engine().register_sink(Table::Notes, notes_sink());
+    engine::init::<Table>(shared::MIGRATIONS);
+    engine::<Table>().register_sink(Table::Notes, notes_sink());
     dioxus::launch(App);
 }
 
@@ -47,7 +47,7 @@ fn App() -> Element {
     // The only long-lived task in the app: the engine's connect loop.
     use_effect(move || {
         spawn(async move {
-            engine().run().await;
+            engine::<Table>().run().await;
         });
     });
 

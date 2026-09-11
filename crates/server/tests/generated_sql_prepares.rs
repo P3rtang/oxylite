@@ -14,20 +14,13 @@
 
 use shared::SyncRow;
 use shared::Table;
-use shared::from_row::RowError;
-use shared::from_row::{FromRow, Row};
 use uuid::Uuid;
 
 /// The notes shape with an LWW axis — every guarded/tombstone statement.
 struct GuardedRow;
 
-impl FromRow for GuardedRow {
-    fn from_row(_row: &Row) -> Result<Self, RowError> {
-        Err(RowError::MissingColumn("prepare-check only".into()))
-    }
-}
-
 impl SyncRow for GuardedRow {
+    type Table = Table;
     const TABLE: Table = Table::Notes;
     const COLUMNS: &'static [&'static str] = &["id", "title", "updated_at"];
     const LWW: Option<&'static str> = Some("updated_at");
@@ -43,13 +36,8 @@ impl SyncRow for GuardedRow {
 /// (no tombstone axis, no guard clause).
 struct PlainRow;
 
-impl FromRow for PlainRow {
-    fn from_row(_row: &Row) -> Result<Self, RowError> {
-        Err(RowError::MissingColumn("prepare-check only".into()))
-    }
-}
-
 impl SyncRow for PlainRow {
+    type Table = Table;
     const TABLE: Table = Table::Notes;
     const COLUMNS: &'static [&'static str] = &["id", "title"];
     fn params(&self) -> Vec<String> {
@@ -92,8 +80,11 @@ async fn prepare(conn: &mut sqlx::PgConnection, name: &str, types: &str, sql: &s
         .unwrap_or_else(|e| panic!("PREPARE failed\nstatement: {sql}\nerror: {e}"));
 }
 
-#[sqlx::test(migrations = "../shared/migrations")]
+#[sqlx::test]
 async fn every_generated_client_statement_prepares(pool: sqlx::PgPool) {
+    // The harness makes a fresh DB only; the UNION migrator applies
+    // lib protocol tables + app tables (the app #2 pattern, #31).
+    server::sync::migrator().run(&pool).await.unwrap();
     let mut conn = pool.acquire().await.unwrap();
     let mut n_stmt = 0;
 

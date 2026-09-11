@@ -1,10 +1,16 @@
 //! Sync machinery for offline-first apps, both sides of the wire.
 //!
+//! The protocol is the lib's own now (#31): the wire DTOs
+//! ([`protocol::Op`] and friends) and the timestamp type live here,
+//! generic over the app's table enum — the dependency arrow points the
+//! right way: the lib owns the protocol, tables, and machinery; apps
+//! implement [`SyncTable`] for their table enum and [`SyncRow`] for
+//! their row types (one declaration feeds both appliers).
+//!
 //! Client (default features, wasm): the local PGlite database, the
-//! websocket sync engine, and the reactive query layer over it. App code
-//! provides row mappings ([`query::SyncRow`]) and per-table row sinks;
-//! this crate owns everything else — the engine singleton, the connection
-//! lifecycle, the offline queue, snapshots, and the PGlite bridge.
+//! websocket sync engine, and the reactive query layer over it. This
+//! crate owns the engine singleton, the connection lifecycle, the
+//! offline queue, snapshots, and the PGlite bridge.
 //!
 //! Server (feature `server`, native only): the protocol machinery every
 //! backend needs — push/pull, the per-connection session decisions, and
@@ -18,7 +24,16 @@
 //! separate features by design — a future actix backend would add its
 //! own module over the same core.
 
+// ---- the protocol core: ungated, pure (serde/uuid/chrono only) ----
+
 pub mod delete;
+pub mod protocol;
+pub mod sync_row;
+pub mod table;
+pub mod timestamp;
+
+#[cfg(feature = "client")]
+pub mod from_row;
 
 #[cfg(feature = "client")]
 pub mod engine;
@@ -35,7 +50,21 @@ pub mod server;
 #[cfg(feature = "axum")]
 pub mod ws;
 
+pub use protocol::{ClientMsg, Op, ServerMsg, TableData, Tombstone};
+pub use sync_row::SyncRow;
+pub use table::{SyncTable, SyncTableWire};
+pub use timestamp::{Timestamp, TimestampError};
+
 #[cfg(feature = "client")]
 pub use engine::{Engine, EngineError, STATUS, engine, init, timer_pause};
 #[cfg(feature = "client")]
+pub use from_row::{FromRow, Row, RowError, str_field};
+#[cfg(feature = "client")]
 pub use pglite::{BridgeError, Pglite};
+
+// The lib's own migration list is generated at build time (see
+// build.rs): a scan of migrations/, sorted lexicographically (= applied
+// order, the same contract sqlx::migrate! follows in `server::migrate`),
+// each file embedded with include_str!. Apps concatenate this with
+// their own list for the client's apply-once boot.
+include!(concat!(env!("OUT_DIR"), "/migrations.rs"));

@@ -16,11 +16,10 @@ async fn main() {
         .await
         .expect("connect to postgres");
 
-    // Same migration files the clients run against PGlite (see shared::MIGRATIONS).
-    sqlx::migrate!("../shared/migrations")
-        .run(&db)
-        .await
-        .expect("apply migrations");
+    // Migrations split along the lib/app boundary (#31) — the lib owns
+    // its protocol tables, the app its own; they apply as ONE migrator
+    // over the merged list (see sync::migrator for why).
+    sync::migrator().run(&db).await.expect("apply migrations");
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))

@@ -1,6 +1,6 @@
 //! Live-query registration and the RAII subscription guard.
 
-use crate::engine::engine;
+use crate::engine::unsubscribe;
 use dioxus::prelude::Signal;
 use std::rc::Rc;
 use uuid::Uuid;
@@ -35,7 +35,7 @@ struct SubGuardInner {
 
 impl Drop for SubGuardInner {
     fn drop(&mut self) {
-        engine().unsubscribe(self.id);
+        crate::engine::unsubscribe(self.id);
     }
 }
 

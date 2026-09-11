@@ -31,12 +31,15 @@ use uuid::Uuid;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::WebSocket;
 
+use crate::from_row::{FromRow, RowError};
 use crate::pglite::{self, BridgeError, Pglite};
+use crate::protocol::{ClientMsg, Op, ServerMsg};
 use crate::query::{Query, Subscription, SubscriptionGuard, SubscriptionId};
+use crate::table::SyncTableWire;
 use crate::tabs;
+use crate::timestamp::Timestamp;
 use dioxus::prelude::{Global, Signal, WritableExt};
-use shared::from_row::{FromRow, RowError};
-use shared::{ClientMsg, Op, ServerMsg, Table, timestamp::Timestamp};
+use std::any::Any;
 
 /// Connection status for the UI status line. A GlobalSignal because it is
 /// engine-owned (not per-component) and must initialize outside any dioxus
@@ -51,8 +54,14 @@ pub static STATUS: Global<Signal<String>, String> = Signal::global(|| "starting�
 pub static LAST_ERROR: Global<Signal<Option<EngineError>>, Option<EngineError>> =
     Signal::global(|| None);
 
+// The singleton slot is type-erased (`Rc<dyn Any>`): the engine is
+// generic over the app's table enum, and Rust has no generic statics.
+// Each app instantiates exactly one `Engine<T>`; `init::<T>` stores it
+// erased and `engine::<T>()` downcasts — the closures below (socket
+// onmessage, BroadcastChannel) capture `T` through their enclosing
+// generic fn, so callbacks resolve the same instantiation.
 thread_local! {
-    static ENGINE: RefCell<Option<Rc<Engine>>> = const { RefCell::new(None) };
+    static ENGINE: RefCell<Option<Rc<dyn Any>>> = const { RefCell::new(None) };
 }
 
 /// Why a query call failed, surfaced to call sites via `Signal<Result<..>>`.
@@ -71,9 +80,11 @@ pub enum EngineError {
     Mapping(#[from] RowError),
     /// The app never registered a row sink for this table — a setup bug.
     /// Surfaced instead of faking an empty success: the cursor would
-    /// otherwise advance past data the client silently dropped.
+    /// otherwise advance past data the client silently dropped. The table
+    /// is its wire name (`SyncTable::as_str`) — errors are T-free so the
+    /// LAST_ERROR global signal stays possible (no generic statics).
     #[error("no row sink registered for {0:?}")]
-    NoSink(Table),
+    NoSink(String),
     /// A registered row sink failed to write its batch (payload didn't
     /// parse, or the upsert SQL failed).
     #[error("sink failed: {0}")]
@@ -90,6 +101,13 @@ enum Role {
 
 /// Tab messages over BroadcastChannel (JSON, like the websocket wire).
 /// Requests flow subordinate → leader; replies and broadcasts flow back.
+///
+/// Deliberately T-FREE (#31): the relay rides the tables' WIRE NAMES —
+/// the same identity the server logs — and the pushed op as raw JSON.
+/// The leader re-attaches the typed table via `T::from_name` when it
+/// acts. This keeps the derive's serde bounds out of generic territory
+/// (a `T`-generic derive here fights the `DeserializeOwned` bound —
+/// E0283) and makes the cross-tab plumbing reusable as-is.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum TabMsg {
     /// Run a read in the leader's PGlite and ship the raw result back.
@@ -103,10 +121,11 @@ enum TabMsg {
         id: u64,
         sql: String,
         params: Vec<String>,
-        touched: Vec<(Table, Uuid)>,
+        touched: Vec<(String, Uuid)>,
     },
-    /// Deliver an op through the leader's socket/pending queue.
-    Push { op: Op },
+    /// Deliver an op through the leader's socket/pending queue: the
+    /// op's wire JSON, re-parsed into `Op<T>` by the leader.
+    Push { op: serde_json::Value },
     /// A newly-subordinate tab asks for the leader's current status.
     Hello,
     /// Query reply: the PGlite result JSON-stringified (the same shape a
@@ -122,28 +141,26 @@ enum TabMsg {
     },
     /// Invalidation fan-out: local echo. A write anywhere re-runs the
     /// matching live queries in every tab.
-    Bump { touched: Vec<(Table, Uuid)> },
+    Bump { touched: Vec<(String, Uuid)> },
     /// The leader's connection state, so every tab shows the same thing.
     Status { text: String },
     /// Relay of an apply failure so the notice overlay works everywhere.
     ApplyError { error: EngineError },
 }
 
-pub struct Engine {
+pub struct Engine<T: SyncTableWire> {
     /// The app's schema migrations, applied to every fresh local DB.
     migrations: &'static [(&'static str, &'static str)],
-    /// Live queries: what the connection keeps in sync.
-    subs: RefCell<Vec<Subscription>>,
     /// The socket while a session is open.
     sock: RefCell<Option<web_sys::WebSocket>>,
     /// Server messages parsed by the onmessage callback, awaiting the
     /// master task.
-    inbox: RefCell<Vec<ServerMsg>>,
+    inbox: RefCell<Vec<ServerMsg<T>>>,
     /// Where we've streamed sync_log to; persisted in the client's meta
     /// table so it survives reloads.
     cursor: Cell<i64>,
     /// Per-table row sinks registered by the app.
-    sinks: RefCell<HashMap<Table, RowSink>>,
+    sinks: RefCell<HashMap<T, RowSink<T>>>,
     /// This tab's role; `None` until the election in `run` resolves. All
     /// DB access awaits it — subordinates must never open PGlite.
     role: Cell<Option<Role>>,
@@ -160,13 +177,22 @@ pub struct Engine {
     status_text: RefCell<String>,
 }
 
+// Live queries are T-FREE reactive plumbing (`Dep` carries wire names
+// since #31, not the table enum), so the registry is a separate global:
+// the subscription guard's Drop cannot know `T`, and the guard must
+// always reach it.
+thread_local! {
+    static SUBS: RefCell<Vec<Subscription>> = const { RefCell::new(Vec::new()) };
+}
+
 /// Create the engine singleton. Called once from `main`, before launch, so
 /// hooks and callbacks can always reach it. Also joins the cross-tab
 /// channel: from here on every tab participates in the leader election.
-pub fn init(migrations: &'static [(&'static str, &'static str)]) {
-    let singleton = Rc::new(Engine {
+/// `T` is the app's table enum — the ONE instantiation of this library
+/// in the app.
+pub fn init<T: SyncTableWire>(migrations: &'static [(&'static str, &'static str)]) {
+    let singleton: Rc<Engine<T>> = Rc::new(Engine {
         migrations,
-        subs: RefCell::new(Vec::new()),
         sock: RefCell::new(None),
         inbox: RefCell::new(Vec::new()),
         cursor: Cell::new(-1),
@@ -183,7 +209,7 @@ pub fn init(migrations: &'static [(&'static str, &'static str)]) {
         Ok(channel) => {
             let on_tab = wasm_bindgen::closure::Closure::new(|e: web_sys::MessageEvent| {
                 if let Some(text) = e.data().as_string() {
-                    engine().recv_tab(&text);
+                    engine::<T>().recv_tab(&text);
                 }
             });
             channel.set_on_message(&on_tab);
@@ -198,7 +224,7 @@ pub fn init(migrations: &'static [(&'static str, &'static str)]) {
         }
     }
 
-    ENGINE.with_borrow_mut(|slot| *slot = Some(singleton));
+    ENGINE.with_borrow_mut(|slot| *slot = Some(singleton as Rc<dyn Any>));
 }
 
 /// App-provided sink for one table's ops: applies that table's events (or
@@ -206,24 +232,30 @@ pub fn init(migrations: &'static [(&'static str, &'static str)]) {
 /// including deletes (`data: null`). The app owns the mapping (it names
 /// its row types); the engine just sinks ops into it — the
 /// dynamic-dispatch boundary of this library.
-pub type RowSink = Rc<
+pub type RowSink<T> = Rc<
     dyn for<'a> Fn(
         &'a Pglite,
-        &'a [Op],
+        &'a [Op<T>],
     )
         -> std::pin::Pin<Box<dyn Future<Output = Result<Vec<Uuid>, EngineError>> + 'a>>,
 >;
 
-/// Handle to the engine singleton.
-pub fn engine() -> Rc<Engine> {
-    ENGINE.with_borrow(|e| e.clone().expect("engine initialized in main"))
+/// Handle to the engine singleton. `T` must be the SAME type `init` was
+/// called with — one `Engine<T>` per app (panics otherwise, which is the
+/// desired setup-bug behavior).
+pub fn engine<T: SyncTableWire>() -> Rc<Engine<T>> {
+    ENGINE.with_borrow(|e| {
+        e.clone()
+            .and_then(|any| any.downcast::<Engine<T>>().ok())
+            .expect("engine initialized in main")
+    })
 }
 
-impl Engine {
+impl<T: SyncTableWire> Engine<T> {
     /// Register the app's sink for one table: what the engine calls to
     /// write that table's payload rows into the local DB. The app owns
     /// the mapping (it names its row types); the engine just sinks rows into it.
-    pub fn register_sink(&self, table: Table, sink: RowSink) {
+    pub fn register_sink(&self, table: T, sink: RowSink<T>) {
         self.sinks.borrow_mut().insert(table, sink);
     }
 
@@ -231,23 +263,21 @@ impl Engine {
     async fn apply_batch(
         &self,
         db: &Pglite,
-        table: Table,
-        ops: &[Op],
+        table: T,
+        ops: &[Op<T>],
     ) -> Result<Vec<Uuid>, EngineError> {
         let sink = self.sinks.borrow().get(&table).cloned();
         match sink {
             Some(f) => (f)(db, ops).await,
-            None => Err(EngineError::NoSink(table)),
+            None => Err(EngineError::NoSink(table.as_str().to_string())),
         }
     }
     /// Register a live query; returns an RAII guard whose Drop unsubscribes
     /// (shared-ownership, so any clone of the guard keeps it alive).
     /// Re-registering the same query id refreshes its deps instead of
-    /// duplicating.
+    /// duplicating. The registry itself is T-free (see `SUBS`).
     pub fn listen(&self, q: Query, rev: Signal<u64>) -> SubscriptionGuard {
-        let mut subs = self.subs.borrow_mut();
-
-        match subs.iter_mut().find(|s| s.id == q.id) {
+        SUBS.with_borrow_mut(|subs| match subs.iter_mut().find(|s| s.id == q.id) {
             Some(existing) => {
                 existing.deps = q.deps;
                 existing.rev = rev;
@@ -259,27 +289,27 @@ impl Engine {
                     rev,
                 });
             }
-        }
+        });
 
         SubscriptionGuard::new(q.id)
     }
 
     /// Remove a subscription (component unmounted).
     pub fn unsubscribe(&self, id: SubscriptionId) {
-        self.subs.borrow_mut().retain(|s| s.id != id);
+        unsubscribe(id);
     }
 
     /// One-shot local read, mapped to `T` via its FromRow impl. Works
     /// regardless of connection state — reads never wait on the network.
     /// Failures are typed so call sites can render them (see use_query).
-    pub async fn query<T: FromRow>(&self, q: &Query) -> Result<Vec<T>, EngineError> {
+    pub async fn query<R: FromRow>(&self, q: &Query) -> Result<Vec<R>, EngineError> {
         match self.wait_role().await {
-            Role::Leader => self.query_local(q).await,
-            Role::Follower => self.query_remote(q).await,
+            Role::Leader => self.query_local::<R>(q).await,
+            Role::Follower => self.query_remote::<R>(q).await,
         }
     }
 
-    async fn query_local<T: FromRow>(&self, q: &Query) -> Result<Vec<T>, EngineError> {
+    async fn query_local<R: FromRow>(&self, q: &Query) -> Result<Vec<R>, EngineError> {
         let db = Pglite::init(self.migrations)
             .await
             .map_err(EngineError::DbInit)?;
@@ -291,7 +321,7 @@ impl Engine {
 
         pglite::rows_of(&result)
             .iter()
-            .map(|row| T::from_row(row))
+            .map(|row| R::from_row(row))
             .collect::<Result<Vec<_>, _>>()
             .map_err(EngineError::from)
     }
@@ -300,7 +330,7 @@ impl Engine {
     /// ships the raw result back as JSON. The leader can die mid-request
     /// (tab close → re-election in flight); requests are read-only, so
     /// re-asking is safe and the fresh leader answers.
-    async fn query_remote<T: FromRow>(&self, q: &Query) -> Result<Vec<T>, EngineError> {
+    async fn query_remote<R: FromRow>(&self, q: &Query) -> Result<Vec<R>, EngineError> {
         loop {
             let id = self.next_req.get();
             self.next_req.set(id + 1);
@@ -316,7 +346,7 @@ impl Engine {
                             .map_err(|e| EngineError::Sql(BridgeError::from_rejection(&e)))?;
                         pglite::rows_of(&parsed)
                             .iter()
-                            .map(|row| T::from_row(row))
+                            .map(|row| R::from_row(row))
                             .collect::<Result<Vec<_>, _>>()
                             .map_err(EngineError::from)
                     }
@@ -336,7 +366,7 @@ impl Engine {
         &self,
         sql: &str,
         params: &[String],
-        touched: &[(Table, Uuid)],
+        touched: &[(T, Uuid)],
     ) -> Result<(), EngineError> {
         match self.wait_role().await {
             Role::Leader => self.exec_local(sql, params, touched).await,
@@ -348,7 +378,7 @@ impl Engine {
         &self,
         sql: &str,
         params: &[String],
-        touched: &[(Table, Uuid)],
+        touched: &[(T, Uuid)],
     ) -> Result<(), EngineError> {
         let db = Pglite::init(self.migrations)
             .await
@@ -368,7 +398,7 @@ impl Engine {
         &self,
         sql: &str,
         params: &[String],
-        touched: &[(Table, Uuid)],
+        touched: &[(T, Uuid)],
     ) -> Result<(), EngineError> {
         loop {
             let id = self.next_req.get();
@@ -377,7 +407,12 @@ impl Engine {
                 id,
                 sql: sql.into(),
                 params: params.to_vec(),
-                touched: touched.to_vec(),
+                // The relay rides wire names; the leader re-attaches the
+                // typed table via `from_name`.
+                touched: touched
+                    .iter()
+                    .map(|(t, r)| (t.as_str().to_string(), *r))
+                    .collect(),
             });
             if let Some(TabMsg::ExecDone { result, .. }) = self.await_tab(id).await {
                 return result.map_err(EngineError::Sql);
@@ -390,14 +425,27 @@ impl Engine {
     /// it in the durable op log (pending_ops) for the connect flush.
     /// At-least-once; LWW makes retries harmless. Subordinates hand the
     /// op to the leader, whose log it becomes.
-    pub async fn push(&self, op: Op) {
+    pub async fn push(&self, op: Op<T>) {
         match self.wait_role().await {
             Role::Leader => self.push_local(op).await,
-            Role::Follower => self.post(&TabMsg::Push { op }),
+            Role::Follower => {
+                // The op crosses as wire JSON; the leader re-parses it
+                // into its own typed shape. A serialization failure here
+                // would lose the write, so it is surfaced, not dropped.
+                match serde_json::to_value(&op) {
+                    Ok(op) => self.post(&TabMsg::Push { op }),
+                    Err(e) => {
+                        log("sync", &format!("op serialization failed: {e}"));
+                        self.set_last_error(EngineError::Sink(format!(
+                            "offline write could not be relayed: {e}"
+                        )));
+                    }
+                }
+            }
         }
     }
 
-    async fn push_local(&self, op: Op) {
+    async fn push_local(&self, op: Op<T>) {
         let open = self
             .sock
             .borrow()
@@ -439,7 +487,7 @@ impl Engine {
     /// Entry point for the socket's onmessage callback. Runs outside any
     /// dioxus scope, so it must never spawn: it parses and enqueues only.
     pub fn recv_text(&self, text: &str) {
-        match serde_json::from_str::<ServerMsg>(text) {
+        match serde_json::from_str::<ServerMsg<T>>(text) {
             Ok(msg) => self.inbox.borrow_mut().push(msg),
             Err(e) => log("sync", &format!("bad message: {e}")),
         }
@@ -471,7 +519,10 @@ impl Engine {
                 self.tab_replies.borrow_mut().insert(*id, msg);
             }
             // Broadcasts, applied inline.
-            TabMsg::Bump { touched } => self.bump(touched),
+            TabMsg::Bump { touched } => {
+                let touched = touched_from_names::<T>(touched.clone());
+                self.bump(&touched);
+            }
             TabMsg::Status { text } => self.set_status_relayed(text),
             TabMsg::ApplyError { error } => {
                 *LAST_ERROR.write_unchecked() = Some(error.clone());
@@ -487,7 +538,7 @@ impl Engine {
             "role={:?} cursor={} live_queries={}",
             self.role.get(),
             self.cursor.get(),
-            self.subs.borrow().len()
+            SUBS.with_borrow(|s| s.len())
         )
     }
 
@@ -552,14 +603,14 @@ impl Engine {
             self.post(&TabMsg::ApplyError { error });
         }
     }
-    fn send(&self, msg: &ClientMsg) {
+    fn send(&self, msg: &ClientMsg<T>) {
         let _ = self.send_ok(msg);
     }
 
     /// Serialize and hand to the socket buffer. `Ok` means the frame was
     /// ACCEPTED (buffered), not delivered — see `flush_pending` for the
     /// durability consequence.
-    fn send_ok(&self, msg: &ClientMsg) -> bool {
+    fn send_ok(&self, msg: &ClientMsg<T>) -> bool {
         let Ok(text) = serde_json::to_string(msg) else {
             return false;
         };
@@ -593,7 +644,7 @@ impl Engine {
             let Some(seq) = pglite::str_field(row, "seq") else {
                 continue;
             };
-            let op: Op = match pglite::str_field(row, "op")
+            let op: Op<T> = match pglite::str_field(row, "op")
                 .and_then(|json| serde_json::from_str(&json).ok())
             {
                 Some(op) => op,
@@ -630,19 +681,24 @@ impl Engine {
     /// of the touched (table, row) pairs. Owners re-run their queries. As
     /// the leader, this is also the local-echo fan-out: subordinates get
     /// the same bump over BroadcastChannel and re-run their queries there.
-    fn bump(&self, touched: &[(Table, Uuid)]) {
-        for sub in self.subs.borrow().iter() {
-            if sub
-                .deps
-                .iter()
-                .any(|d| touched.iter().any(|(t, r)| d.matches(*t, *r)))
-            {
-                *sub.rev.write_unchecked() += 1;
+    fn bump(&self, touched: &[(T, Uuid)]) {
+        SUBS.with_borrow(|subs| {
+            for sub in subs.iter() {
+                if sub
+                    .deps
+                    .iter()
+                    .any(|d| touched.iter().any(|(t, r)| d.matches(t.as_str(), *r)))
+                {
+                    *sub.rev.write_unchecked() += 1;
+                }
             }
-        }
+        });
         if self.role.get() == Some(Role::Leader) && !touched.is_empty() {
             self.post(&TabMsg::Bump {
-                touched: touched.to_vec(),
+                touched: touched
+                    .iter()
+                    .map(|(t, r)| (t.as_str().to_string(), *r))
+                    .collect(),
             });
         }
     }
@@ -691,14 +747,14 @@ impl Engine {
         // One dedicated task serves every subordinate's query/write/push
         // for the lifetime of the leadership (it re-joins the PGlite
         // singleton, so it never races `run` for initialization).
-        let servicer = engine();
+        let servicer = engine::<T>();
         wasm_bindgen_futures::spawn_local(async move {
             servicer.serve_tabs().await;
         });
 
         loop {
             self.set_status("connecting…");
-            match open_socket(&sync_url()) {
+            match open_socket::<T>(&sync_url()) {
                 Ok(sock) => {
                     *self.sock.borrow_mut() = Some(sock.clone());
                     self.set_status("connected");
@@ -761,6 +817,7 @@ impl Engine {
                 params,
                 touched,
             } => {
+                let touched = touched_from_names::<T>(touched);
                 let result = match db.query(&sql, &params).await {
                     Ok(_) => {
                         self.bump(&touched);
@@ -770,7 +827,10 @@ impl Engine {
                 };
                 self.post(&TabMsg::ExecDone { id, result });
             }
-            TabMsg::Push { op } => self.push_local(op).await,
+            TabMsg::Push { op } => match serde_json::from_value::<Op<T>>(op) {
+                Ok(op) => self.push_local(op).await,
+                Err(e) => log("tabs", &format!("relayed op unparsable: {e}")),
+            },
             // Replies and broadcasts are addressed to subordinates.
             _ => log("tabs", "reply/broadcast arrived at the leader — dropped"),
         }
@@ -812,7 +872,7 @@ impl Engine {
         }
     }
 
-    async fn handle_msg(&self, db: &Pglite, msg: ServerMsg) {
+    async fn handle_msg(&self, db: &Pglite, msg: ServerMsg<T>) {
         match msg {
             ServerMsg::Ack { .. } => {
                 // The server may hold events we haven't seen; pull again.
@@ -831,7 +891,7 @@ impl Engine {
                 // (table, row_id) rides along with the payload, so phase 1
                 // needs no extra protocol messages (phase 2 can send a
                 // payload-less Invalidate instead).
-                let mut unique: Vec<Table> = Vec::new();
+                let mut unique: Vec<T> = Vec::new();
                 for op in &events {
                     if !unique.contains(&op.table) {
                         unique.push(op.table);
@@ -839,7 +899,7 @@ impl Engine {
                 }
                 let mut touched = Vec::with_capacity(events.len());
                 for table in unique {
-                    let ops: Vec<Op> = events
+                    let ops: Vec<Op<T>> = events
                         .iter()
                         .filter(|o| o.table == table)
                         .cloned()
@@ -888,7 +948,7 @@ impl Engine {
                     // by construction (deleted rows are excluded
                     // server-side). `id`/`updated_at` are read from the
                     // payload by the sink's row parsing.
-                    let ops: Vec<Op> = table_data
+                    let ops: Vec<Op<T>> = table_data
                         .rows
                         .iter()
                         .map(|row| Op {
@@ -926,9 +986,9 @@ impl Engine {
 /// Publish an apply failure from outside the `Engine` impl (the generic
 /// batch sink skips poison rows and surfaces them here). Relayed to
 /// subordinate tabs exactly like engine-internal failures.
-pub(crate) fn publish_last_error(error: EngineError) {
+pub(crate) fn publish_last_error<T: SyncTableWire>(error: EngineError) {
     if ENGINE.with_borrow(|e| e.is_some()) {
-        engine().set_last_error(error);
+        engine::<T>().set_last_error(error);
     } else {
         *LAST_ERROR.write_unchecked() = Some(error);
     }
@@ -939,15 +999,32 @@ pub fn log(kind: &str, msg: &str) {
     web_sys::console::log_1(&JsValue::from_str(&format!("[{kind}] {msg}")));
 }
 
+/// Re-attach typed tables to relayed touched pairs: the tab wire rides
+/// wire names (`SyncTable::as_str`), the engine's internals are typed.
+/// Unknown names (from a newer app version) are skipped — the compat
+/// boundary, same rule as server replay.
+fn touched_from_names<T: SyncTableWire>(touched: Vec<(String, Uuid)>) -> Vec<(T, Uuid)> {
+    touched
+        .into_iter()
+        .filter_map(|(name, id)| Some((T::from_name(&name)?, id)))
+        .collect()
+}
+
+/// Remove a subscription without going through the engine — the RAII
+/// guard's Drop cannot know the engine's table type (`T`).
+pub(crate) fn unsubscribe(id: SubscriptionId) {
+    SUBS.with_borrow_mut(|s| s.retain(|s| s.id != id));
+}
+
 /// Open the sync websocket; parsed messages are enqueued via
 /// [`Engine::recv_text`] and everything else is driven by `run`.
-fn open_socket(url: &str) -> Result<WebSocket, JsValue> {
+fn open_socket<T: SyncTableWire>(url: &str) -> Result<WebSocket, JsValue> {
     let ws = WebSocket::new(url)?;
 
     let onmessage =
         wasm_bindgen::closure::Closure::wrap(Box::new(move |e: web_sys::MessageEvent| {
             if let Some(text) = e.data().as_string() {
-                engine().recv_text(&text);
+                engine::<T>().recv_text(&text);
             }
         }) as Box<dyn FnMut(web_sys::MessageEvent)>);
     ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));

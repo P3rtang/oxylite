@@ -5,8 +5,8 @@
 //! stays UI-agnostic.
 
 use dioxus::prelude::*;
-use std::fmt::Display;
 use sync::engine::timer_pause;
+use std::fmt::Display;
 use uuid::Uuid;
 
 /// One toast: a title and a message, rendered until auto-dismissed.

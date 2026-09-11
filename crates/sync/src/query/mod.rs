@@ -7,8 +7,9 @@
 //! the websocket; the Engine owns that and bumps query revisions here.
 //!
 //! The row contract itself (`SyncRow`) and the JS-row decode (`FromRow`)
-//! live in `shared` — one declaration feeds both sides (#30); this module
-//! is the client half: the reactive plumbing and the generic batch sink.
+//! are the lib's own now (#31) — one declaration feeds both sides; this
+//! module is the client half: the reactive plumbing and the generic
+//! batch sink.
 
 mod apply;
 mod dep;

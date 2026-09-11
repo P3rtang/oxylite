@@ -6,18 +6,18 @@
 
 use std::rc::Rc;
 
-pub use shared::Note;
-use shared::timestamp::Timestamp;
-use shared::{Op, Table};
 use sync::engine::RowSink;
 use sync::pglite::Pglite;
 use sync::query::apply_ops;
+pub use shared::Note;
+use shared::Timestamp;
+use shared::{Op, Table};
 use uuid::Uuid;
 
 /// The engine sinks `Table::Notes` ops here (Events and Snapshots,
 /// deletes included). Registered in main at startup — ownership requires
 /// the mapping to live app-side, since it names the row type.
-pub fn notes_sink() -> RowSink {
+pub fn notes_sink() -> RowSink<Table> {
     Rc::new(|db: &Pglite, ops: &[Op]| Box::pin(apply_ops::<Note>(db, ops)))
 }
 

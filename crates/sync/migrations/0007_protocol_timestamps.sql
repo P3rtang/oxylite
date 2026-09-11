@@ -10,8 +10,11 @@
 --
 -- The USING casts fail loud on legacy rows whose text isn't a
 -- timestamp: a corrupt store must stop the migration, not flow on.
-ALTER TABLE notes
-    ALTER COLUMN updated_at TYPE timestamptz USING updated_at::timestamptz;
+--
+-- The lib's own tables (the app's replicated tables get the same
+-- treatment in the APP's migrations — for the notes app that is
+-- 0008_notes_timestamptz). Split from the original combined 0007 when
+-- the migrations split along the lib/app boundary (#31).
 ALTER TABLE sync_log
     ALTER COLUMN updated_at TYPE timestamptz USING updated_at::timestamptz;
 ALTER TABLE tombstones

@@ -8,8 +8,9 @@
 //! data: null }` on the existing Push path. The null payload is the
 //! marker: there is no row state to ship, only the fact of removal.
 
-use shared::Op;
-use shared::Timestamp;
+use crate::protocol::Op;
+use crate::table::SyncTable;
+use crate::timestamp::Timestamp;
 
 /// Whether an `Op` upserts row state or deletes its row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,15 +20,15 @@ pub enum OpKind {
 }
 
 /// The kind dispatch as a local extension trait: an inherent `impl Op`
-/// cannot move here (orphan rule — `Op` is `shared`'s), and `OpKind`
-/// must stay lib-side next to the semantics that consume it. Same
-/// placement pattern as `SyncTable for shared::Table`.
+/// cannot move here (orphan rule — `Op` is the lib's own type now but
+/// the trait keeps call sites uniform, #29's pattern), and `OpKind`
+/// must stay lib-side next to the semantics that consume it.
 pub trait OpExt {
     /// `data: null` ⇒ delete; anything else is row state (upsert).
     fn kind(&self) -> OpKind;
 }
 
-impl OpExt for Op {
+impl<T: SyncTable> OpExt for Op<T> {
     fn kind(&self) -> OpKind {
         if self.data.is_null() {
             OpKind::Delete

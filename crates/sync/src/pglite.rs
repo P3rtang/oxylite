@@ -189,8 +189,8 @@ pub fn rows_of(result: &JsValue) -> Vec<js_sys::Object> {
         .collect()
 }
 
-// The JS-row field helper lives with the decode contract (shared's
-// `from_row`, feature `client`): same rule as before — timestamptz
-// columns come back as JS `Date` objects, normalized to canonical ISO
-// at this edge. Re-exported so row impls keep one import path.
-pub use shared::from_row::str_field;
+// The JS-row field helper lives with the decode contract (`from_row`,
+// feature `client`): same rule as before — timestamptz columns come
+// back as JS `Date` objects, normalized to canonical ISO at this edge.
+// Re-exported so row impls keep one import path.
+pub use crate::from_row::str_field;

@@ -5,9 +5,29 @@
 //! a typed error carrying the offending string. The serde path validates
 //! too — it IS the wire boundary.
 
-use shared::Op;
-use shared::timestamp::{Timestamp, TimestampError};
+use sync::timestamp::{Timestamp, TimestampError};
 use uuid::Uuid;
+
+// Fixture table (#31): the suite instantiates the protocol standalone.
+use enum_iterator::Sequence;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Sequence, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum FixtureTable {
+    Notes,
+}
+
+type Op = sync::protocol::Op<FixtureTable>;
+
+impl sync::table::SyncTable for FixtureTable {
+    fn as_str(self) -> &'static str {
+        "notes"
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        (name == "notes").then_some(Self::Notes)
+    }
+}
 
 #[test]
 fn variants_canonicalize_to_one_wire_shape() {

@@ -2995,13 +2995,12 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "enum-iterator",
- "js-sys",
  "serde",
  "serde_json",
  "sqlx",
+ "sync",
  "thiserror 2.0.20",
  "uuid",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -3387,12 +3386,12 @@ name = "sync"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chrono",
  "dioxus",
  "enum-iterator",
  "js-sys",
  "serde",
  "serde_json",
- "shared",
  "sqlx",
  "thiserror 2.0.20",
  "tokio",

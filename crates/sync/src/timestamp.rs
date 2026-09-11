@@ -19,6 +19,10 @@
 //! sqlx decodes/binds real `DateTime`s — the only place TEXT ↔ timestamp
 //! conversion still happens is the wire (serde) and the client bridge,
 //! which both normalize to the canonical form.
+//!
+//! Moved into the lib's core (#31): the wire DTOs carry it, and the lib
+//! owns its protocol — the old "shared cannot depend on sync" blocker
+//! died when the wasm machinery became feature-gated (#30).
 
 use chrono::{DateTime, Utc};
 use serde::de::{Deserialize, Deserializer, Error as DeError, Unexpected, Visitor};

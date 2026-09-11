@@ -2,13 +2,14 @@
 //! Postgres: a delete is one op `{table, id, updated_at, data: null}`;
 //! the live row goes away, a tombstone guards against stale writes, and
 //! the op itself stays in sync_log (guards decide at apply time).
-//! `#[sqlx::test]` makes a fresh database per test and applies the
-//! shared migrations. Helpers use the runtime (non-macro) query API —
+//! `#[sqlx::test]` makes a fresh database per test; the UNION migrator
+//! (lib protocol tables + app tables) runs at the top of each test —
+//! the app #2 pattern, #31. Helpers use the runtime (non-macro) query API —
 //! the checked macros live in the library, and keeping this file
 //! macro-free means no `.sqlx` entries depend on a test target.
 
 use server::sync::{load_or_build_snapshot, pull_since, push};
-use shared::timestamp::Timestamp;
+use shared::Timestamp;
 use shared::{Op, Table};
 use sqlx::types::chrono::{DateTime, Utc};
 use sync_lib::delete::{OpExt, OpKind};
@@ -84,8 +85,9 @@ async fn log_count(db: &sqlx::PgPool) -> i64 {
         .unwrap()
 }
 
-#[sqlx::test(migrations = "../shared/migrations")]
+#[sqlx::test]
 async fn malformed_payload_is_rejected_and_logs_nothing(pool: sqlx::PgPool) {
+    server::sync::migrator().run(&pool).await.unwrap();
     // The push door. A malformed ENVELOPE timestamp can no longer be
     // built in Rust at all — `Timestamp` forbids it, and serde validates
     // the WS message before `push` is ever called (pinned in
@@ -113,8 +115,9 @@ async fn malformed_payload_is_rejected_and_logs_nothing(pool: sqlx::PgPool) {
     assert_eq!(live_count(&pool, id).await, 0);
 }
 
-#[sqlx::test(migrations = "../shared/migrations")]
+#[sqlx::test]
 async fn push_delete_removes_row_and_tombstones(pool: sqlx::PgPool) {
+    server::sync::migrator().run(&pool).await.unwrap();
     let id = Uuid::now_v7();
     push(&pool, &[upsert_op(id, "alive", T1)]).await.unwrap();
     assert_eq!(live_count(&pool, id).await, 1);
@@ -128,8 +131,9 @@ async fn push_delete_removes_row_and_tombstones(pool: sqlx::PgPool) {
     assert_eq!(payloads[1], serde_json::Value::Null);
 }
 
-#[sqlx::test(migrations = "../shared/migrations")]
+#[sqlx::test]
 async fn stale_edit_dropped_live_table_keeps_delete(pool: sqlx::PgPool) {
+    server::sync::migrator().run(&pool).await.unwrap();
     let id = Uuid::now_v7();
     push(&pool, &[upsert_op(id, "v1", T1)]).await.unwrap();
     push(&pool, &[delete_op(id, T2)]).await.unwrap();
@@ -143,8 +147,9 @@ async fn stale_edit_dropped_live_table_keeps_delete(pool: sqlx::PgPool) {
     assert_eq!(log_payloads(&pool).await.len(), 3);
 }
 
-#[sqlx::test(migrations = "../shared/migrations")]
+#[sqlx::test]
 async fn newer_edit_resurrects_and_clears_tombstone(pool: sqlx::PgPool) {
+    server::sync::migrator().run(&pool).await.unwrap();
     let id = Uuid::now_v7();
     push(&pool, &[upsert_op(id, "v1", T1)]).await.unwrap();
     push(&pool, &[delete_op(id, T2)]).await.unwrap();
@@ -156,8 +161,9 @@ async fn newer_edit_resurrects_and_clears_tombstone(pool: sqlx::PgPool) {
     assert_eq!(tombstone(&pool, id).await, None);
 }
 
-#[sqlx::test(migrations = "../shared/migrations")]
+#[sqlx::test]
 async fn duplicate_delete_is_idempotent(pool: sqlx::PgPool) {
+    server::sync::migrator().run(&pool).await.unwrap();
     let id = Uuid::now_v7();
     push(&pool, &[upsert_op(id, "v1", T1)]).await.unwrap();
     push(&pool, &[delete_op(id, T2)]).await.unwrap();
@@ -168,13 +174,14 @@ async fn duplicate_delete_is_idempotent(pool: sqlx::PgPool) {
     assert_eq!(log_payloads(&pool).await.len(), 3);
 }
 
-#[sqlx::test(migrations = "../shared/migrations")]
+#[sqlx::test]
 async fn pull_streams_delete_with_null_payload(pool: sqlx::PgPool) {
+    server::sync::migrator().run(&pool).await.unwrap();
     let id = Uuid::now_v7();
     push(&pool, &[upsert_op(id, "v1", T1)]).await.unwrap();
     push(&pool, &[delete_op(id, T2)]).await.unwrap();
 
-    let (events, cursor) = pull_since(&pool, 0).await.unwrap();
+    let (events, cursor) = pull_since::<Table>(&pool, 0).await.unwrap();
     assert_eq!(cursor, 2);
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].kind(), OpKind::Upsert);
@@ -183,8 +190,9 @@ async fn pull_streams_delete_with_null_payload(pool: sqlx::PgPool) {
     assert_eq!(events[1].data, serde_json::Value::Null);
 }
 
-#[sqlx::test(migrations = "../shared/migrations")]
+#[sqlx::test]
 async fn snapshot_excludes_deleted_row(pool: sqlx::PgPool) {
+    server::sync::migrator().run(&pool).await.unwrap();
     let gone = Uuid::now_v7();
     let alive = Uuid::now_v7();
     push(

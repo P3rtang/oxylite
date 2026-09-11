@@ -1,6 +1,13 @@
 //! What invalidates a query.
+//!
+//! A table dependency is the table's WIRE NAME (`&'static str` from
+//! `SyncTable::as_str`), not the enum value (#31): it keeps the
+//! reactive plumbing free of the app's table type — bespoke queries
+//! stay `Query::new(sql).dep(Dep::Table(Note::TABLE.as_str()))` with no
+//! turbofish, and the name is the same identity the server logs in
+//! `sync_log.table_name`. The trait guarantees the name is static and
+//! stable, so nothing stringly-typed sneaks in.
 
-use shared::Table;
 use uuid::Uuid;
 
 /// What invalidates a query. `Table` fires on any change to that table;
@@ -13,12 +20,12 @@ use uuid::Uuid;
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dep {
-    Table(Table),
+    Table(&'static str),
     Row(Uuid),
 }
 
 impl Dep {
-    pub(crate) fn matches(self, table: Table, row_id: Uuid) -> bool {
+    pub(crate) fn matches(self, table: &str, row_id: Uuid) -> bool {
         match self {
             Dep::Table(t) => t == table,
             Dep::Row(id) => id == row_id,

@@ -1,13 +1,14 @@
 //! The notes row — the ONE note type, shared by both sides (reviewer
 //! decision, #30). The mapping lives here because the orphan rule
-//! allows exactly this placement (trait + type in one crate) and
-//! because the mapping is the app's business: the LIB never names a
-//! row type, it only consumes `SyncRow`/`FromRow` generically. The
-//! SQL generators are the single source for both appliers; the decode
-//! is client-only (feature `client`).
+//! allows exactly this placement (type local, trait a dep) and because
+//! the mapping is the app's business: the LIB never names a row type,
+//! it only consumes `SyncRow`/`FromRow` generically. The SQL
+//! generators are the single source for both appliers; the decode is
+//! client-only (feature `client`).
 
-use crate::sync_row::SyncRow;
-use crate::{Table, Timestamp};
+use crate::Table;
+use sync::sync_row::SyncRow;
+use sync::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -23,6 +24,7 @@ pub struct Note {
 /// inserts, the list query, the engine's batched LWW upserts, and the
 /// server's apply path — all derive from this.
 impl SyncRow for Note {
+    type Table = Table;
     const TABLE: Table = Table::Notes;
     const COLUMNS: &'static [&'static str] = &["id", "title", "body", "updated_at"];
     const LWW: Option<&'static str> = Some("updated_at");
@@ -46,8 +48,8 @@ mod client {
     //! Rows come back as JS objects; Note knows how to build itself.
 
     use super::Note;
-    use crate::from_row::{FromRow, Row, RowError, str_field};
-    use crate::timestamp::Timestamp;
+    use sync::from_row::{FromRow, Row, RowError, str_field};
+    use sync::timestamp::Timestamp;
 
     impl FromRow for Note {
         fn from_row(row: &Row) -> Result<Self, RowError> {
@@ -79,9 +81,9 @@ mod server {
     //! the validating).
 
     use super::Note;
-    use crate::timestamp::Timestamp;
+    use sync::timestamp::Timestamp;
 
-    impl sqlx::FromRow for Note {
+    impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Note {
         fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
             use sqlx::Row as _;
             Ok(Note {

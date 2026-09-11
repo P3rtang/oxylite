@@ -4,6 +4,10 @@
 //! in; the server consumes rows through sqlx instead. `RowError` is
 //! pure data and stays ungated: it rides inside sync's `EngineError`
 //! when apply failures relay across tabs.
+//!
+//! Lib-owned again (#31) — this was sync's until #30 parked it in the
+//! app's shared crate; the inversion moved it back with the rest of the
+//! protocol surface.
 
 /// Why mapping a raw row to `T` failed. Typed so call sites can match on
 /// the shape of the failure instead of parsing prose. Serializable: it

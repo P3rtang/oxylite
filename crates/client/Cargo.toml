@@ -5,7 +5,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-shared = { path = "../shared" }
+# `client` enables shared's client seam (sync's wasm machinery + Note's
+# JS-row decode) — explicit here, no feature-unification luck.
+shared = { path = "../shared", features = ["client"] }
 sync = { path = "../sync", features = ["client"] }
 dioxus = { version = "0.7", features = ["web"] }
 serde = { version = "1", features = ["derive"] }

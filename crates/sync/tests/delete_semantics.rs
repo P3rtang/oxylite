@@ -4,12 +4,38 @@
 //! bridge) must agree with. No database — the contract is decision
 //! logic, and the SQL sides are pinned elsewhere (server sqlx::tests,
 //! client e2e, client SQL prepare-checks).
+//!
+//! Runs against a LOCAL fixture table enum (#31): the lib no longer
+//! depends on the app's `shared` crate, and this suite doubles as the
+//! proof that a consuming app can instantiate the whole protocol with
+//! nothing but `sync` itself.
 
-use shared::timestamp::Timestamp;
-use shared::{Op, Table};
-use std::collections::HashMap;
+use enum_iterator::Sequence;
 use sync::delete::{OpExt, OpKind, tombstone_allows};
+use sync::protocol::Op;
+use sync::table::SyncTable;
+use sync::timestamp::Timestamp;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
+
+/// The consuming app's table enum, fixture flavor. Same shape the notes
+/// app's `shared::Table` has: Sequence-derived, lowercase wire names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Sequence, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum FixtureTable {
+    Notes,
+}
+
+impl SyncTable for FixtureTable {
+    fn as_str(self) -> &'static str {
+        "notes"
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        (name == "notes").then_some(Self::Notes)
+    }
+}
 
 /// Parse in the helper: test fixtures get the same validation the wire
 /// does — a malformed fixture fails here, not downstream.
@@ -17,16 +43,16 @@ fn ts(s: &str) -> Timestamp {
     Timestamp::parse(s).unwrap()
 }
 
-fn op(data: serde_json::Value, updated_at: &str) -> Op {
+fn op(data: serde_json::Value, updated_at: &str) -> Op<FixtureTable> {
     Op {
-        table: Table::Notes,
+        table: FixtureTable::Notes,
         id: Uuid::now_v7(),
         data,
         updated_at: ts(updated_at),
     }
 }
 
-fn note(title: &str, updated_at: &str) -> Op {
+fn note(title: &str, updated_at: &str) -> Op<FixtureTable> {
     op(
         serde_json::json!({ "title": title, "body": "", "updated_at": updated_at }),
         updated_at,
@@ -86,7 +112,7 @@ struct Store {
 
 impl Store {
     /// One event, applied per the LWW + tombstone contract.
-    fn apply(&mut self, op: &Op) {
+    fn apply(&mut self, op: &Op<FixtureTable>) {
         let deleted_at = self.tombstones.get(&op.id);
         if !tombstone_allows(&op.updated_at, deleted_at) {
             self.rejected += 1;
@@ -183,18 +209,18 @@ fn offline_stretch_delete_then_replay_in_order() {
     assert_eq!(s.tombstones.get(&id), Some(&ts(T2)));
 }
 
-fn note_at(id: Uuid, at: &str) -> Op {
+fn note_at(id: Uuid, at: &str) -> Op<FixtureTable> {
     Op {
-        table: Table::Notes,
+        table: FixtureTable::Notes,
         id,
         data: serde_json::json!({ "title": "n", "body": "", "updated_at": at }),
         updated_at: ts(at),
     }
 }
 
-fn delete_at(id: Uuid, at: &str) -> Op {
+fn delete_at(id: Uuid, at: &str) -> Op<FixtureTable> {
     Op {
-        table: Table::Notes,
+        table: FixtureTable::Notes,
         id,
         data: serde_json::Value::Null,
         updated_at: ts(at),

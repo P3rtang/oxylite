@@ -1,16 +1,38 @@
-//! SQL-shape pins for the generated client statements (`SyncRow`
-//! defaults in `sync::query::sync_row`). Unit tests can't execute them
-//! host-side (the runtime is PGlite in a browser), so their exact shape
+//! SQL-shape pins for the generated statements (`SyncRow` defaults).
+//! Unit tests can't execute them against a real database on either side
+//! (the client's runtime is PGlite in a browser), so their exact shape
 //! is asserted here — a malformed statement (the double-`r.` alias that
-//! once shipped) only surfaces as a runtime 42P01 on the client, never
-//! at compile time. Semantic validity (parse, name resolution, param
-//! types) is covered by the prepare-checks in
+//! once shipped) only surfaces as a runtime 42P01, never at compile
+//! time. Semantic validity (parse, name resolution, param types) is
+//! covered by the prepare-checks in
 //! `crates/server/tests/generated_sql_prepares.rs`.
+//!
+//! Runs against a LOCAL fixture row (#31): the lib no longer depends on
+//! the app's `shared` crate — a consuming app's row impl is exactly
+//! this shape, and the pins travel with the lib.
 
-use shared::SyncRow;
-use shared::Table;
-use shared::from_row::{FromRow, Row, RowError};
+use enum_iterator::Sequence;
+use sync::sync_row::SyncRow;
+use sync::table::SyncTable;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// The consuming app's table enum, fixture flavor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Sequence, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum FixtureTable {
+    Notes,
+}
+
+impl SyncTable for FixtureTable {
+    fn as_str(self) -> &'static str {
+        "notes"
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        (name == "notes").then_some(Self::Notes)
+    }
+}
 
 struct TestNote {
     id: Uuid,
@@ -18,14 +40,9 @@ struct TestNote {
     updated_at: String,
 }
 
-impl FromRow for TestNote {
-    fn from_row(_row: &Row) -> Result<Self, RowError> {
-        Err(RowError::MissingColumn("test-only".into()))
-    }
-}
-
 impl SyncRow for TestNote {
-    const TABLE: Table = Table::Notes;
+    type Table = FixtureTable;
+    const TABLE: FixtureTable = FixtureTable::Notes;
     const COLUMNS: &'static [&'static str] = &["id", "title", "updated_at"];
     const LWW: Option<&'static str> = Some("updated_at");
 
@@ -87,13 +104,9 @@ fn delete_sql_tombstones_only_what_it_removed() {
 #[test]
 fn delete_sql_without_lww_has_no_tombstone() {
     struct Plain;
-    impl FromRow for Plain {
-        fn from_row(_row: &Row) -> Result<Self, RowError> {
-            Err(RowError::MissingColumn("test-only".into()))
-        }
-    }
     impl SyncRow for Plain {
-        const TABLE: Table = Table::Notes;
+        type Table = FixtureTable;
+        const TABLE: FixtureTable = FixtureTable::Notes;
         const COLUMNS: &'static [&'static str] = &["id", "title"];
         fn params(&self) -> Vec<String> {
             unimplemented!()

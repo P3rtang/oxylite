@@ -7,9 +7,10 @@
 use crate::delete::{OpExt, OpKind};
 use crate::engine::EngineError;
 use crate::pglite::Pglite;
-
-use shared::timestamp::Timestamp;
-use shared::{Op, SyncRow, Table, Tombstone};
+use crate::protocol::{Op, Tombstone};
+use crate::sync_row::SyncRow;
+use crate::table::SyncTable;
+use crate::timestamp::Timestamp;
 use uuid::Uuid;
 
 /// The final state of one pk after a batch: its newest op, as row data
@@ -32,7 +33,7 @@ enum FinalRow<T> {
 /// content to apply, and failing the whole chunk would drop every good
 /// row around them (one poison row in a backlog used to erase a thousand
 /// events). Skips are surfaced on `LAST_ERROR`, not swallowed.
-pub async fn apply_ops<T>(db: &Pglite, ops: &[Op]) -> Result<Vec<Uuid>, EngineError>
+pub async fn apply_ops<T>(db: &Pglite, ops: &[Op<T::Table>]) -> Result<Vec<Uuid>, EngineError>
 where
     T: SyncRow + serde::de::DeserializeOwned,
 {
@@ -148,7 +149,7 @@ where
 
     if !skipped.is_empty() {
         let first = skipped.first().map(String::as_str).unwrap_or("?");
-        crate::engine::publish_last_error(EngineError::Sink(format!(
+        crate::engine::publish_last_error::<T::Table>(EngineError::Sink(format!(
             "skipped {} unparseable payload row(s); first: {first}",
             skipped.len()
         )));
@@ -160,10 +161,13 @@ where
 /// Apply snapshot tombstones: upsert each one, never regressing a newer
 /// local tombstone (a pending offline delete must outlive the snapshot
 /// that predates it).
-pub async fn apply_tombstones(db: &Pglite, tombstones: &[Tombstone]) -> Result<(), EngineError> {
+pub async fn apply_tombstones<T: SyncTable>(
+    db: &Pglite,
+    tombstones: &[Tombstone<T>],
+) -> Result<(), EngineError> {
     // Group by table so the SQL can quote the name (same statement shape
     // as SyncRow::tombstone_upsert_sql, but the table comes from the row).
-    let mut by_table: std::collections::HashMap<Table, Vec<&Tombstone>> =
+    let mut by_table: std::collections::HashMap<T, Vec<&Tombstone<T>>> =
         std::collections::HashMap::new();
     for t in tombstones {
         by_table.entry(t.table).or_default().push(t);

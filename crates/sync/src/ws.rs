@@ -12,12 +12,13 @@ use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     routing::get,
 };
-use shared::{ServerMsg, Table};
 use sqlx::postgres::PgPool;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+use crate::protocol::ServerMsg;
 use crate::server::{OpApply, Session, SnapshotSource, current_cursor, pull_since};
+use crate::table::SyncTableWire;
 
 /// Ticker cadence: stream any server changes to connected sockets. The
 /// mechanism is a DB poll today — ROADMAP 2.2 (Postgres pub/sub)
@@ -29,20 +30,25 @@ const STREAM_TICK: Duration = Duration::from_millis(500);
 /// plug-ins are the app's [`OpApply`] + [`SnapshotSource`] impls (ZSTs —
 /// cloned per connection; `Send + Sync` because `&self` crosses awaits
 /// in the session and the on-upgrade future must be Send).
-pub fn sync_router<A, S>(db: PgPool, applier: A, source: S) -> Router
+pub fn sync_router<T, A, S>(db: PgPool, applier: A, source: S) -> Router
 where
-    A: OpApply + Clone + Send + Sync + 'static,
-    S: SnapshotSource<Table> + Clone + Send + Sync + 'static,
+    T: SyncTableWire,
+    A: OpApply<T> + Clone + Send + Sync + 'static,
+    S: SnapshotSource<T> + Clone + Send + Sync + 'static,
 {
     let route = move |ws: WebSocketUpgrade| async move {
         ws.on_upgrade(move |socket| {
-            handle_socket(socket, db.clone(), applier.clone(), source.clone())
+            handle_socket::<T, A, S>(socket, db.clone(), applier.clone(), source.clone())
         })
     };
     Router::new().route("/sync", get(route))
 }
 
-async fn handle_socket<A: OpApply + Send + Sync, S: SnapshotSource<Table> + Send + Sync>(
+async fn handle_socket<
+    T: SyncTableWire,
+    A: OpApply<T> + Send + Sync,
+    S: SnapshotSource<T> + Send + Sync,
+>(
     mut socket: WebSocket,
     db: PgPool,
     applier: A,
@@ -56,7 +62,7 @@ async fn handle_socket<A: OpApply + Send + Sync, S: SnapshotSource<Table> + Send
     // connection. Older events arrive via explicit Pull.
     let mut stream_cursor = current_cursor(&db).await;
 
-    let (out_tx, mut out_rx) = mpsc::channel::<ServerMsg>(64);
+    let (out_tx, mut out_rx) = mpsc::channel::<ServerMsg<T>>(64);
 
     // Ticker: stream any server changes to this connection.
     let ticker_db = db.clone();
@@ -65,7 +71,7 @@ async fn handle_socket<A: OpApply + Send + Sync, S: SnapshotSource<Table> + Send
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            match pull_since(&ticker_db, stream_cursor).await {
+            match pull_since::<T>(&ticker_db, stream_cursor).await {
                 Ok((events, cursor)) if !events.is_empty() => {
                     stream_cursor = cursor;
                     let _ = out_tx.send(ServerMsg::Events { events, cursor }).await;
@@ -109,7 +115,7 @@ async fn handle_socket<A: OpApply + Send + Sync, S: SnapshotSource<Table> + Send
 }
 
 /// Serialize and deliver one server message; false means the socket died.
-async fn send_msg(socket: &mut WebSocket, msg: &ServerMsg) -> bool {
+async fn send_msg<T: SyncTableWire>(socket: &mut WebSocket, msg: &ServerMsg<T>) -> bool {
     match serde_json::to_string(msg) {
         Ok(text) => socket.send(Message::Text(text.into())).await.is_ok(),
         Err(_) => false,
