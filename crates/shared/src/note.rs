@@ -58,12 +58,12 @@ mod client {
             // fabricated "missing column".
             Ok(Note {
                 id: row
-                    .str_field_req("id")?
+                    .field_req::<String>("id")?
                     .parse()
                     .map_err(|_| RowError::BadUuid("id".into()))?,
-                title: row.str_field_req("title")?,
-                body: row.str_field_req("body")?,
-                updated_at: Timestamp::parse(row.str_field_req("updated_at")?.as_str())
+                title: row.field_req("title")?,
+                body: row.field_req("body")?,
+                updated_at: Timestamp::parse(row.field_req::<String>("updated_at")?.as_str())
                     .map_err(|e| RowError::BadTimestamp("updated_at".into(), e))?,
             })
         }

@@ -104,81 +104,78 @@ mod client {
                 .map_err(|_| RowError::InvalidType(Type::Object, key.into()))
         }
 
-        /// A text field: plain text passes through; PGlite's JS `Date`
-        /// (what a `timestamptz` column comes back as) normalizes to
-        /// canonical ISO at this edge — the one place the read path
-        /// changes shape (the same rule as the bridge's typed reads).
-        pub fn str_field(&self, key: &str) -> Result<Option<String>, RowError> {
+        /// Read one field, shaped by `T`: the generic reader that replaces
+        /// per-family methods. The three layers stay distinct —
+        /// `Ok(None)` is SQL NULL (the mapper decides, for nullable
+        /// columns), `Err(MissingColumn)` a column the SELECT dropped,
+        /// `Err(InvalidType)` a value `T` couldn't shape.
+        pub fn field<T: FromJs>(&self, key: &str) -> Result<Option<T>, RowError> {
             self.raw(key)?
-                .map(|v| {
-                    if let Some(s) = v.as_string() {
-                        return Ok(s);
-                    }
-                    if v.is_instance_of::<js_sys::Date>() {
-                        return Ok(js_sys::Date::from(v).to_iso_string().into());
-                    }
-                    Err(RowError::InvalidType(classify(&v), key.into()))
-                })
+                .map(|v| T::from_js(&v).map_err(|ty| RowError::InvalidType(ty, key.into())))
                 .transpose()
         }
 
-        /// The required-text form: for columns the mapper's schema says
-        /// NOT NULL, SQL NULL is its own error — never folded into a
+        /// The required form: for columns the mapper's schema says NOT
+        /// NULL, SQL NULL is its own error — never folded into a
         /// fabricated "missing column".
-        pub fn str_field_req(&self, key: &str) -> Result<String, RowError> {
-            self.str_field(key)?
+        pub fn field_req<T: FromJs>(&self, key: &str) -> Result<T, RowError> {
+            self.field(key)?
                 .ok_or_else(|| RowError::NullColumn(key.into()))
         }
+    }
 
-        /// A numeric field: JS numbers cast via `as_f64`; bigints coerce
-        /// the JS way (`Number(bigint)`) — i64-scale values above 2^53
-        /// lose precision, so a bigint-exact reader is the escape hatch
-        /// if a table ever needs it.
-        pub fn num_field(&self, key: &str) -> Result<Option<f64>, RowError> {
-            self.raw(key)?
-                .map(|v| {
-                    if let Some(n) = v.as_f64() {
-                        return Ok(n);
-                    }
-                    if let Some(b) = v.dyn_ref::<js_sys::BigInt>() {
-                        // Number(bigint) — the JS coercion. This js-sys
-                        // binds no Number methods, so the global
-                        // constructor is reached reflectively.
-                        let coerced = js_sys::Reflect::get(&js_sys::global(), &"Number".into())
-                            .ok()
-                            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
-                            .and_then(|f| f.call1(&JsValue::NULL, b).ok())
-                            .and_then(|n| n.as_f64());
-                        return match coerced {
-                            Some(n) => Ok(n),
-                            None => Err(RowError::InvalidType(Type::Number, key.into())),
-                        };
-                    }
-                    Err(RowError::InvalidType(classify(&v), key.into()))
-                })
-                .transpose()
+    /// A value shape the read path can produce out of a row — the
+    /// extension point for custom Postgres types. The lib ships the
+    /// standard shapes (text/number/boolean, with PGlite's JS `Date`
+    /// normalized to canonical ISO on the text path); apps implement
+    /// their own — enum text, jsonb payloads, domains — without
+    /// touching the lib. The storage/wire contract stays text
+    /// (`SyncRow` binds strings); this trait is the read side only.
+    ///
+    /// The contract: shape ONE non-null JS value. On mismatch, return
+    /// the type family actually found — the field accessor wraps it
+    /// into `RowError::InvalidType` with the column's name.
+    pub trait FromJs: Sized {
+        fn from_js(value: &JsValue) -> Result<Self, Type>;
+    }
+
+    impl FromJs for String {
+        fn from_js(value: &JsValue) -> Result<Self, Type> {
+            if let Some(s) = value.as_string() {
+                return Ok(s);
+            }
+            if value.is_instance_of::<js_sys::Date>() {
+                return Ok(js_sys::Date::from(value.clone()).to_iso_string().into());
+            }
+            Err(classify(value))
         }
+    }
 
-        /// The required-number form (NOT NULL columns).
-        pub fn num_field_req(&self, key: &str) -> Result<f64, RowError> {
-            self.num_field(key)?
-                .ok_or_else(|| RowError::NullColumn(key.into()))
+    impl FromJs for f64 {
+        fn from_js(value: &JsValue) -> Result<Self, Type> {
+            if let Some(n) = value.as_f64() {
+                return Ok(n);
+            }
+            if let Some(b) = value.dyn_ref::<js_sys::BigInt>() {
+                // Number(bigint) — the JS coercion. This js-sys binds no
+                // Number methods, so the global constructor is reached
+                // reflectively. i64-scale values above 2^53 lose
+                // precision: a bigint-exact reader is the escape hatch
+                // if a table ever needs one.
+                return js_sys::Reflect::get(&js_sys::global(), &"Number".into())
+                    .ok()
+                    .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+                    .and_then(|f| f.call1(&JsValue::NULL, b).ok())
+                    .and_then(|n| n.as_f64())
+                    .ok_or_else(|| classify(value));
+            }
+            Err(classify(value))
         }
+    }
 
-        /// A boolean field.
-        pub fn bool_field(&self, key: &str) -> Result<Option<bool>, RowError> {
-            self.raw(key)?
-                .map(|v| {
-                    v.as_bool()
-                        .ok_or_else(|| RowError::InvalidType(classify(&v), key.into()))
-                })
-                .transpose()
-        }
-
-        /// The required-boolean form (NOT NULL columns).
-        pub fn bool_field_req(&self, key: &str) -> Result<bool, RowError> {
-            self.bool_field(key)?
-                .ok_or_else(|| RowError::NullColumn(key.into()))
+    impl FromJs for bool {
+        fn from_js(value: &JsValue) -> Result<Self, Type> {
+            value.as_bool().ok_or_else(|| classify(value))
         }
     }
 
@@ -211,4 +208,4 @@ mod client {
 }
 
 #[cfg(feature = "client")]
-pub use client::{FromRow, Row};
+pub use client::{FromJs, FromRow, Row};
