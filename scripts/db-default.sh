@@ -38,7 +38,7 @@ SEED_SQL="INSERT INTO notes (id, title, body, updated_at) VALUES
   ('01980000-0000-7000-8000-000000000001', 'seed: welcome', 'This note ships with the default database state (scripts/db-default.sql).', '2026-01-01T00:00:01.000Z'),
   ('01980000-0000-7000-8000-000000000002', 'seed: offline-first', 'Writes land in local PGlite first, then sync over websocket with LWW.', '2026-01-01T00:00:02.000Z'),
   ('01980000-0000-7000-8000-000000000003', 'seed: multi-tab', 'One engine per browser — subordinate tabs proxy to the leader.', '2026-01-01T00:00:03.000Z');
-INSERT INTO sync_log (table_name, row_id, payload, updated_at)
+INSERT INTO oxylite.sync_log (table_name, row_id, payload, updated_at)
   SELECT 'notes', id, jsonb_build_object('id', id, 'title', title, 'body', body, 'updated_at', updated_at), updated_at
   FROM notes WHERE id::text LIKE '01980000-%';"
 

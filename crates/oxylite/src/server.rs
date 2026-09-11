@@ -56,7 +56,7 @@ const SNAPSHOT_MAX_LAG: i64 = 5_000;
 
 /// The server's cursor: the newest seq in the sync log.
 pub async fn current_cursor(db: &PgPool) -> i64 {
-    sqlx::query_scalar!(r#"SELECT COALESCE(MAX(seq), 0) as "cursor!" FROM sync_log"#)
+    sqlx::query_scalar!(r#"SELECT COALESCE(MAX(seq), 0) as "cursor!" FROM oxylite.sync_log"#)
         .fetch_one(db)
         .await
         .unwrap_or(0)
@@ -77,7 +77,7 @@ pub async fn rebuild_snapshots<T: SyncTable, S: SnapshotSource<T>>(
         let data = source.snapshot(table, db).await?;
 
         sqlx::query!(
-            "INSERT INTO snapshots (table_name, seq, data)
+            "INSERT INTO oxylite.snapshots (table_name, seq, data)
              VALUES ($1, $2, $3)
              ON CONFLICT (table_name) DO UPDATE
                SET seq = EXCLUDED.seq, created_at = now(), data = EXCLUDED.data",
@@ -109,7 +109,7 @@ pub async fn load_or_build_snapshot<T: SyncTable, S: SnapshotSource<T>>(
     let stored = sqlx::query!(
         r#"SELECT seq,
                   COALESCE(EXTRACT(EPOCH FROM (now() - created_at)), 0)::bigint as "age_sec!"
-           FROM snapshots ORDER BY seq DESC LIMIT 1"#,
+           FROM oxylite.snapshots ORDER BY seq DESC LIMIT 1"#,
     )
     .fetch_optional(db)
     .await?;
@@ -122,9 +122,10 @@ pub async fn load_or_build_snapshot<T: SyncTable, S: SnapshotSource<T>>(
     }
 
     // All tables are rebuilt together, so any row's seq is the generation.
-    let rows = sqlx::query!("SELECT table_name, seq, data FROM snapshots ORDER BY table_name",)
-        .fetch_all(db)
-        .await?;
+    let rows =
+        sqlx::query!("SELECT table_name, seq, data FROM oxylite.snapshots ORDER BY table_name",)
+            .fetch_all(db)
+            .await?;
 
     let seq = rows.first().map(|row| row.seq).unwrap_or(head);
     let tables = rows
@@ -144,10 +145,11 @@ pub async fn load_or_build_snapshot<T: SyncTable, S: SnapshotSource<T>>(
     // Tombstones are the lib's own table, mapped onto the caller's table
     // type via `T::from_name`. Unknown table names (from a newer client)
     // are skipped: this side is the compat boundary.
-    let tombstone_rows =
-        sqlx::query!("SELECT table_name, id, deleted_at FROM tombstones ORDER BY table_name, id")
-            .fetch_all(db)
-            .await?;
+    let tombstone_rows = sqlx::query!(
+        "SELECT table_name, id, deleted_at FROM oxylite.tombstones ORDER BY table_name, id"
+    )
+    .fetch_all(db)
+    .await?;
     let mut tombstones = Vec::with_capacity(tombstone_rows.len());
     for row in tombstone_rows {
         // Unknown table names (from a newer client) are skipped: this
@@ -187,7 +189,7 @@ pub async fn pull_since<T: SyncTable>(
     since: i64,
 ) -> Result<(Vec<Op<T>>, i64), SyncError> {
     let head: i64 =
-        sqlx::query_scalar!(r#"SELECT COALESCE(MAX(seq), 0) as "head!" FROM sync_log"#,)
+        sqlx::query_scalar!(r#"SELECT COALESCE(MAX(seq), 0) as "head!" FROM oxylite.sync_log"#,)
             .fetch_one(db)
             .await?;
 
@@ -197,7 +199,7 @@ pub async fn pull_since<T: SyncTable>(
 
     let rows = sqlx::query!(
         "SELECT seq, table_name, row_id, payload, updated_at
-         FROM sync_log WHERE seq > $1 ORDER BY seq LIMIT 1000",
+         FROM oxylite.sync_log WHERE seq > $1 ORDER BY seq LIMIT 1000",
         since,
     )
     .fetch_all(db)
@@ -267,7 +269,7 @@ pub async fn push<T: SyncTable, A: OpApply<T>>(
         applier.apply(op, &mut tx).await?;
 
         sqlx::query!(
-            "INSERT INTO sync_log (table_name, row_id, payload, updated_at)
+            "INSERT INTO oxylite.sync_log (table_name, row_id, payload, updated_at)
              VALUES ($1, $2, $3, $4)",
             op.table.as_str(),
             op.id,
@@ -281,7 +283,7 @@ pub async fn push<T: SyncTable, A: OpApply<T>>(
     let cursor: i64 = sqlx::query_scalar!(
         // COALESCE is an expression, so nullability can't be inferred:
         // force it — this query can only return 0 or a real seq.
-        r#"SELECT COALESCE(MAX(seq), 0) as "cursor!" FROM sync_log"#,
+        r#"SELECT COALESCE(MAX(seq), 0) as "cursor!" FROM oxylite.sync_log"#,
     )
     .fetch_one(&mut *tx)
     .await?;

@@ -17,7 +17,7 @@
  * migrations itself: applied names are tracked in the client's own `meta`
  * table, mirroring sqlx's `_sqlx_migrations`.
  */
-async (migrations) => {
+async (schema, migrations) => {
     if (!globalThis.__pgliteReady) {
         globalThis.__pgliteReady = (async () => {
             const base = new URL("/pglite/index.js", location.href);
@@ -31,17 +31,20 @@ async (migrations) => {
             // Bootstrap the migration tracker before anything else, then
             // apply pending migrations apply-once like sqlx does
             // server-side. Idempotent DDL keeps a half-applied set healable.
+            // The lib's namespace exists before anything of ours does;
+            // the migration tracker lives inside it (like _sqlx_migrations).
+            await db.exec("CREATE SCHEMA IF NOT EXISTS " + schema);
             await db.exec(
-                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                `CREATE TABLE IF NOT EXISTS ${schema}.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
             );
             for (const m of migrations) {
                 const key = "migration:" + m.name;
                 const seen = await db.query(
-                    "SELECT 1 FROM meta WHERE key = $1", [key]);
+                    `SELECT 1 FROM ${schema}.meta WHERE key = $1`, [key]);
                 if (seen.rows.length === 0) {
                     await db.exec(m.up);
                     await db.query(
-                        "INSERT INTO meta (key, value) VALUES ($1, '1')",
+                        `INSERT INTO ${schema}.meta (key, value) VALUES ($1, '1')`,
                         [key],
                     );
                 }

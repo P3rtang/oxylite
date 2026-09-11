@@ -55,6 +55,15 @@ pub use sync_row::SyncRow;
 pub use table::{SyncTable, SyncTableWire};
 pub use timestamp::{Timestamp, TimestampError};
 
+/// The Postgres schema (namespace) the lib owns on BOTH sides — the
+/// server's real Postgres and the client's PGlite (#32). Every protocol
+/// table the lib creates lives here, so an app's own tables can never
+/// collide with it and the lib's footprint in the app's database is ONE
+/// namespace. The app's replicated tables are the app's business — the
+/// lib never names where they live (boundary rule 1). Renames are one
+/// migration; the wire never sees this name.
+pub const SCHEMA: &str = "oxylite";
+
 #[cfg(feature = "client")]
 pub use engine::{Engine, EngineError, STATUS, engine, init, timer_pause};
 #[cfg(feature = "client")]

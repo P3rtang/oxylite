@@ -44,7 +44,7 @@ function psql(sql: string) {
 // must not resurrect it, a resurrection must.
 function seedOp(title: string, id: string, at: string) {
   psql(
-    `INSERT INTO sync_log (table_name, row_id, payload, updated_at)` +
+    `INSERT INTO oxylite.sync_log (table_name, row_id, payload, updated_at)` +
       ` VALUES ('notes', '${id}', jsonb_build_object('id', '${id}', 'title', '${title}', 'body', '', 'updated_at', '${at}'), '${at}');`,
   );
 }
@@ -54,7 +54,7 @@ function rowIdByTitle(title: string): string {
   // tests) — the create op's payload in sync_log outlives it.
   return execSync(
     `podman compose exec -T postgres psql -U sync -d offline_notes -tAc ` +
-      `"SELECT row_id FROM sync_log WHERE payload->>'title' = '${title}' LIMIT 1"`,
+      `"SELECT row_id FROM oxylite.sync_log WHERE payload->>'title' = '${title}' LIMIT 1"`,
     { cwd: "..", encoding: "utf8" },
   ).trim();
 }
@@ -127,7 +127,7 @@ test("a cold replay collapses create, delete, and a stale edit without resurrect
   const DELETE_AT = "2026-01-01T00:00:02.000Z";
   const STALE_AT = "2026-01-01T00:00:00.000Z";
   psql(
-    `INSERT INTO sync_log (table_name, row_id, payload, updated_at) VALUES` +
+    `INSERT INTO oxylite.sync_log (table_name, row_id, payload, updated_at) VALUES` +
       ` ('notes', '${id}', jsonb_build_object('id', '${id}', 'title', '${title}', 'body', '', 'updated_at', '${CREATE_AT}'), '${CREATE_AT}'),` +
       // Deletes log the JSON null VALUE (the marker), not SQL NULL.
       ` ('notes', '${id}', 'null'::jsonb, '${DELETE_AT}'),` +

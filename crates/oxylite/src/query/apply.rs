@@ -4,6 +4,7 @@
 //! server's per-op applier (`sync::server::apply_one`) runs the SAME
 //! generated statements — one declaration feeds both.
 
+use crate::SCHEMA;
 use crate::delete::{OpExt, OpKind};
 use crate::engine::EngineError;
 use crate::pglite::Pglite;
@@ -174,8 +175,9 @@ pub async fn apply_tombstones<T: SyncTable>(
     }
     for (table, rows) in by_table {
         for chunk in rows.chunks(2000) {
-            let mut sql =
-                String::from("INSERT INTO tombstones (table_name, id, deleted_at) VALUES ");
+            let mut sql = String::from(&format!(
+                "INSERT INTO {SCHEMA}.tombstones (table_name, id, deleted_at) VALUES "
+            ));
             sql.push_str(
                 &chunk
                     .iter()
@@ -184,10 +186,10 @@ pub async fn apply_tombstones<T: SyncTable>(
                     .collect::<Vec<_>>()
                     .join(", "),
             );
-            sql.push_str(
+            sql.push_str(&format!(
                 " ON CONFLICT (table_name, id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at \
-                 WHERE EXCLUDED.deleted_at > tombstones.deleted_at",
-            );
+                 WHERE EXCLUDED.deleted_at > {SCHEMA}.tombstones.deleted_at",
+            ));
             let params: Vec<String> = chunk
                 .iter()
                 .flat_map(|t| [t.id.to_string(), t.deleted_at.canonical_text()])

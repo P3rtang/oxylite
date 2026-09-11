@@ -4,7 +4,7 @@
 -- — cannot lose them; the connect flush drains the table and deletes the
 -- rows the socket accepted. Unused on the server; exists there only so
 -- both sides apply one identical migration set (same convention as `meta`).
-CREATE TABLE IF NOT EXISTS pending_ops (
+CREATE TABLE IF NOT EXISTS oxylite.pending_ops (
     seq BIGSERIAL PRIMARY KEY,
     op  TEXT NOT NULL
 );

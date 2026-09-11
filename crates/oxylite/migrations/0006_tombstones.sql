@@ -7,7 +7,7 @@
 -- newer write clears it (resurrection). Retained unboundedly: stale
 -- pushes bypass cursors, so cursor math cannot prune these — acceptable,
 -- they are tiny (no row data).
-CREATE TABLE IF NOT EXISTS tombstones (
+CREATE TABLE IF NOT EXISTS oxylite.tombstones (
     table_name TEXT NOT NULL,
     id         UUID NOT NULL,
     deleted_at TEXT NOT NULL,
@@ -18,6 +18,6 @@ CREATE TABLE IF NOT EXISTS tombstones (
 -- updated_at cannot ride the payload like an upsert's does. sync_log
 -- gets its own column; pull replays it per event. Backfill from the
 -- payloads already logged, then drop the add-column default.
-ALTER TABLE sync_log ADD COLUMN IF NOT EXISTS updated_at TEXT NOT NULL DEFAULT '';
-UPDATE sync_log SET updated_at = COALESCE(payload->>'updated_at', '') WHERE updated_at = '';
-ALTER TABLE sync_log ALTER COLUMN updated_at DROP DEFAULT;
+ALTER TABLE oxylite.sync_log ADD COLUMN IF NOT EXISTS updated_at TEXT NOT NULL DEFAULT '';
+UPDATE oxylite.sync_log SET updated_at = COALESCE(payload->>'updated_at', '') WHERE updated_at = '';
+ALTER TABLE oxylite.sync_log ALTER COLUMN updated_at DROP DEFAULT;

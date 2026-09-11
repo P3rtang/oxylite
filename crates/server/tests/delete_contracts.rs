@@ -64,22 +64,24 @@ async fn live_row(db: &sqlx::PgPool, id: Uuid) -> Option<(String, DateTime<Utc>)
 /// The row's tombstone, if any: deleted_at (timestamptz — a real
 /// DateTime comes back; the storage layer did the validating).
 async fn tombstone(db: &sqlx::PgPool, id: Uuid) -> Option<DateTime<Utc>> {
-    sqlx::query_scalar("SELECT deleted_at FROM tombstones WHERE table_name = 'notes' AND id = $1")
-        .bind(id)
-        .fetch_optional(db)
-        .await
-        .unwrap()
+    sqlx::query_scalar(
+        "SELECT deleted_at FROM oxylite.tombstones WHERE table_name = 'notes' AND id = $1",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await
+    .unwrap()
 }
 
 async fn log_payloads(db: &sqlx::PgPool) -> Vec<serde_json::Value> {
-    sqlx::query_scalar("SELECT payload FROM sync_log ORDER BY seq")
+    sqlx::query_scalar("SELECT payload FROM oxylite.sync_log ORDER BY seq")
         .fetch_all(db)
         .await
         .unwrap()
 }
 
 async fn log_count(db: &sqlx::PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*)::bigint FROM sync_log")
+    sqlx::query_scalar("SELECT count(*)::bigint FROM oxylite.sync_log")
         .fetch_one(db)
         .await
         .unwrap()

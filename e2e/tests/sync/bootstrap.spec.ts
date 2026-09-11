@@ -80,7 +80,7 @@ test("cold client bulk-loads a snapshot instead of replaying row by row", async 
     ` (to_char(now() - (g || ' seconds')::interval, 'YYYY-MM-DD') || 'T' ||` +
     ` to_char(now() - (g || ' seconds')::interval, 'HH24:MI:SS.MS') || 'Z')::timestamptz` +
     ` FROM generate_series(1, 120) g;` +
-    ` INSERT INTO sync_log (table_name, row_id, payload, updated_at)` +
+    ` INSERT INTO oxylite.sync_log (table_name, row_id, payload, updated_at)` +
     ` SELECT 'notes', id, jsonb_build_object('id', id, 'title', title, 'body', body, 'updated_at', updated_at), updated_at` +
     ` FROM notes WHERE title LIKE '${stamp}%';`;
   execSync(`podman compose exec -T postgres psql -U sync -d offline_notes -c "${sql}"`, {

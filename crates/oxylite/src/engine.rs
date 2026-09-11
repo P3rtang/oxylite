@@ -31,6 +31,7 @@ use uuid::Uuid;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::WebSocket;
 
+use crate::SCHEMA;
 use crate::from_row::{FromRow, RowError};
 use crate::pglite::{self, BridgeError, Pglite};
 use crate::protocol::{ClientMsg, Op, ServerMsg};
@@ -476,7 +477,10 @@ impl<T: SyncTableWire> Engine<T> {
             }
         };
         if let Err(e) = db
-            .query("INSERT INTO pending_ops (op) VALUES ($1)", &[json])
+            .query(
+                &format!("INSERT INTO {SCHEMA}.pending_ops (op) VALUES ($1)"),
+                &[json],
+            )
             .await
         {
             log("sync", &format!("op log write failed: {e}"));
@@ -630,7 +634,10 @@ impl<T: SyncTableWire> Engine<T> {
     /// stronger follow-up.
     async fn flush_pending(&self, db: &Pglite) {
         let rows = match db
-            .query("SELECT seq::text, op FROM pending_ops ORDER BY seq", &[])
+            .query(
+                &format!("SELECT seq::text, op FROM {SCHEMA}.pending_ops ORDER BY seq"),
+                &[],
+            )
             .await
         {
             Ok(result) => pglite::rows_of(&result),
@@ -664,7 +671,7 @@ impl<T: SyncTableWire> Engine<T> {
         if let Err(e) = db
             .query(
                 &format!(
-                    "DELETE FROM pending_ops WHERE seq IN ({})",
+                    "DELETE FROM {SCHEMA}.pending_ops WHERE seq IN ({})",
                     slots.join(", ")
                 ),
                 &accepted,
@@ -1046,7 +1053,10 @@ fn sync_url() -> String {
 /// survive reloads).
 async fn load_cursor(pglite: &Pglite) -> i64 {
     pglite
-        .query("SELECT value FROM meta WHERE key = 'cursor'", &[])
+        .query(
+            &format!("SELECT value FROM {SCHEMA}.meta WHERE key = 'cursor'"),
+            &[],
+        )
         .await
         .ok()
         .and_then(|r| {
@@ -1060,8 +1070,10 @@ async fn load_cursor(pglite: &Pglite) -> i64 {
 async fn save_cursor(pglite: &Pglite, cursor: i64) {
     let _ = pglite
         .query(
-            "INSERT INTO meta (key, value) VALUES ('cursor', $1)
-             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            &format!(
+                "INSERT INTO {SCHEMA}.meta (key, value) VALUES ('cursor', $1) \
+                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+            ),
             &[cursor.to_string()],
         )
         .await;

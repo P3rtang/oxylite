@@ -17,7 +17,7 @@ test("apply failures surface in the notice overlay", async ({ page }) => {
   // design); the payload is what must poison the apply.
   execSync(
     `podman compose exec -T postgres psql -U sync -d offline_notes -c ` +
-      `"INSERT INTO sync_log (table_name, row_id, payload, updated_at) ` +
+      `"INSERT INTO oxylite.sync_log (table_name, row_id, payload, updated_at) ` +
       `VALUES ('notes', gen_random_uuid(), '{}'::jsonb, '2026-01-01T00:00:00.000Z');"`,
     { cwd: ".." }, // playwright runs from e2e/; compose file is at the repo root
   );

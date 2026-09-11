@@ -71,7 +71,7 @@ fn guarded_upsert_selects_aliased_columns_once() {
         "bad select list: {sql}"
     );
     assert!(sql.contains(") AS r(id, title, updated_at)"));
-    assert!(sql.contains("WHERE NOT EXISTS (SELECT 1 FROM tombstones tb"));
+    assert!(sql.contains("WHERE NOT EXISTS (SELECT 1 FROM oxylite.tombstones tb"));
     assert!(sql.contains("tb.id = r.id AND tb.deleted_at >= r.updated_at"));
     assert!(sql.contains("WHERE EXCLUDED.updated_at > notes.updated_at"));
     assert!(!sql.contains("r.r."), "double alias prefix: {sql}");
@@ -83,7 +83,7 @@ fn guarded_upsert_selects_aliased_columns_once() {
 #[test]
 fn tombstone_clear_binds_pk_and_lww_pairs() {
     let sql = TestNote::tombstone_clear_sql(2);
-    assert!(sql.starts_with("DELETE FROM tombstones t USING (VALUES "));
+    assert!(sql.starts_with("DELETE FROM oxylite.tombstones t USING (VALUES "));
     assert!(sql.contains("($1::uuid, $2::timestamptz), ($3::uuid, $4::timestamptz)"));
     assert!(sql.contains("t.id = w.id AND t.deleted_at < w.at"));
 }
@@ -98,7 +98,7 @@ fn delete_sql_tombstones_only_what_it_removed() {
     assert!(sql.contains("WHERE t.id = w.id AND t.updated_at < w.at RETURNING t.id"));
     assert!(sql.contains("WHERE w.id IN (SELECT id FROM gone)"));
     assert!(sql.contains("ON CONFLICT (table_name, id) DO UPDATE"));
-    assert!(sql.contains("WHERE EXCLUDED.deleted_at > tombstones.deleted_at"));
+    assert!(sql.contains("WHERE EXCLUDED.deleted_at > oxylite.tombstones.deleted_at"));
 }
 
 #[test]

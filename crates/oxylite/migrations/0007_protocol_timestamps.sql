@@ -15,7 +15,7 @@
 -- treatment in the APP's migrations — for the notes app that is
 -- 0008_notes_timestamptz). Split from the original combined 0007 when
 -- the migrations split along the lib/app boundary (#31).
-ALTER TABLE sync_log
+ALTER TABLE oxylite.sync_log
     ALTER COLUMN updated_at TYPE timestamptz USING updated_at::timestamptz;
-ALTER TABLE tombstones
+ALTER TABLE oxylite.tombstones
     ALTER COLUMN deleted_at TYPE timestamptz USING deleted_at::timestamptz;

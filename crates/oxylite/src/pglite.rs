@@ -57,7 +57,8 @@ impl Pglite {
     /// dir. wasm-bindgen async externs auto-await the returned promise.
     ///
     /// The boot snippet applies `migrations` itself (tracked apply-once in
-    /// the client's `meta` table, mirroring sqlx's `_sqlx_migrations`).
+    /// the lib's own schema — `SCHEMA.meta` — mirroring sqlx's
+    /// `_sqlx_migrations`).
     pub async fn init(migrations: &[(&'static str, &'static str)]) -> Result<Pglite, BridgeError> {
         if let Some(existing) = INSTANCE.with(|i| i.borrow().clone()) {
             return Ok(existing);
@@ -77,7 +78,12 @@ impl Pglite {
                 )
             })
             .collect();
-        let code = format!("({})([{}])", PGLITE_BOOT_JS, migs.join(","));
+        let code = format!(
+            "({})({}, [{}])",
+            PGLITE_BOOT_JS,
+            serde_json::to_string(crate::SCHEMA).unwrap(),
+            migs.join(",")
+        );
 
         // Ok(value) = the auto-awaited construction promise resolving to the
         // PGlite instance; Err(value) = its rejection reason. Only a

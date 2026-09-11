@@ -15,6 +15,7 @@
 //! dispatch stays at the table/sink boundary; this trait is the generic
 //! side.
 
+use crate::SCHEMA;
 use crate::table::{SyncTable, SyncTableWire};
 use uuid::Uuid;
 
@@ -179,7 +180,7 @@ pub trait SyncRow: Sized {
         }
         sql.push_str(&format!(") AS r({})", cols.join(", ")));
         sql.push_str(&format!(
-            " WHERE NOT EXISTS (SELECT 1 FROM tombstones tb \
+            " WHERE NOT EXISTS (SELECT 1 FROM {SCHEMA}.tombstones tb \
              WHERE tb.table_name = '{}' AND tb.id = r.{} AND tb.deleted_at >= r.{lww})",
             Self::TABLE.as_str(),
             Self::PK
@@ -205,7 +206,7 @@ pub trait SyncRow: Sized {
     /// way (the row is newer than any tombstone such a write could clear).
     fn tombstone_clear_sql(n_rows: usize) -> String {
         format!(
-            "DELETE FROM tombstones t USING (VALUES {}) AS w(id, at) \
+            "DELETE FROM {SCHEMA}.tombstones t USING (VALUES {}) AS w(id, at) \
              WHERE t.table_name = '{}' AND t.id = w.id AND t.deleted_at < w.at",
             (0..n_rows)
                 .map(|r| format!("(${}::uuid, ${}::timestamptz)", r * 2 + 1, r * 2 + 2))
@@ -247,12 +248,12 @@ pub trait SyncRow: Sized {
                    DELETE FROM {table} AS t USING (VALUES {vals}) AS w(id, at) \
                    WHERE t.{pk} = w.id AND t.{lww} < w.at RETURNING t.{pk} \
                  ) \
-                 INSERT INTO tombstones (table_name, id, deleted_at) \
+                 INSERT INTO {SCHEMA}.tombstones (table_name, id, deleted_at) \
                  SELECT '{table}', w.id, w.at FROM (VALUES {vals}) AS w(id, at) \
                  WHERE w.{pk} IN (SELECT {pk} FROM gone) \
                  ON CONFLICT (table_name, id) DO UPDATE \
                    SET deleted_at = EXCLUDED.deleted_at \
-                 WHERE EXCLUDED.deleted_at > tombstones.deleted_at",
+                 WHERE EXCLUDED.deleted_at > {SCHEMA}.tombstones.deleted_at",
                 table = Self::TABLE.as_str(),
                 pk = pk,
                 lww = lww,
