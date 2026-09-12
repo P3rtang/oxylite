@@ -16,9 +16,15 @@ async fn main() {
         // sessions' own Push/Pull/snapshot ops and the adapter's
         // dedicated LISTEN connection. The full e2e suite at 3 workers
         // runs 6 sessions — 5 connections queued them (observed as a
-        // 1.3s delivery spike under load); 12 covers 6 sessions +
-        // adapter + headroom.
-        .max_connections(12)
+        // 1.3s delivery spike under load). 12 covers 6 sessions +
+        // adapter + headroom; SYNC_POOL_MAX overrides it (same
+        // env-over-const deployment rule as the fallback tick) — the
+        // fan-out makes demand scale with sessions, so deployments
+        // past ~10 concurrent sessions re-tune here.
+        .max_connections(match std::env::var("SYNC_POOL_MAX") {
+            Ok(v) => v.parse().expect("SYNC_POOL_MAX must be a number"),
+            Err(_) => 12,
+        })
         .connect(&db_url)
         .await
         .expect("connect to postgres");
