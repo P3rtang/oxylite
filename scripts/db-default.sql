@@ -16,6 +16,7 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
+DROP TRIGGER IF EXISTS sync_log_notify ON oxylite.sync_log;
 ALTER TABLE IF EXISTS ONLY public.notes DROP CONSTRAINT IF EXISTS notes_pkey;
 ALTER TABLE IF EXISTS ONLY public._sqlx_migrations DROP CONSTRAINT IF EXISTS _sqlx_migrations_pkey;
 ALTER TABLE IF EXISTS ONLY oxylite.tombstones DROP CONSTRAINT IF EXISTS tombstones_pkey;
@@ -38,6 +39,7 @@ DROP TABLE IF EXISTS oxylite.quarantine;
 DROP SEQUENCE IF EXISTS oxylite.pending_ops_seq_seq;
 DROP TABLE IF EXISTS oxylite.pending_ops;
 DROP TABLE IF EXISTS oxylite.meta;
+DROP FUNCTION IF EXISTS oxylite.notify_sync_log();
 DROP SCHEMA IF EXISTS oxylite;
 --
 -- Name: oxylite; Type: SCHEMA; Schema: -; Owner: sync
@@ -47,6 +49,22 @@ CREATE SCHEMA oxylite;
 
 
 ALTER SCHEMA oxylite OWNER TO sync;
+
+--
+-- Name: notify_sync_log(); Type: FUNCTION; Schema: oxylite; Owner: sync
+--
+
+CREATE FUNCTION oxylite.notify_sync_log() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    PERFORM pg_notify('oxylite_ops', NEW.seq::text);
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION oxylite.notify_sync_log() OWNER TO sync;
 
 SET default_tablespace = '';
 
@@ -288,9 +306,9 @@ COPY oxylite.snapshots (table_name, seq, created_at, data) FROM stdin;
 --
 
 COPY oxylite.sync_log (seq, table_name, row_id, payload, updated_at, logged_at) FROM stdin;
-1	notes	01980000-0000-7000-8000-000000000001	{"id": "01980000-0000-7000-8000-000000000001", "body": "This note ships with the default database state (scripts/db-default.sql).", "title": "seed: welcome", "updated_at": "2026-01-01T00:00:01+00:00"}	2026-01-01 00:00:01+00	2026-09-12 13:23:56.876466+00
-2	notes	01980000-0000-7000-8000-000000000002	{"id": "01980000-0000-7000-8000-000000000002", "body": "Writes land in local PGlite first, then sync over websocket with LWW.", "title": "seed: offline-first", "updated_at": "2026-01-01T00:00:02+00:00"}	2026-01-01 00:00:02+00	2026-09-12 13:23:56.876466+00
-3	notes	01980000-0000-7000-8000-000000000003	{"id": "01980000-0000-7000-8000-000000000003", "body": "One engine per browser — subordinate tabs proxy to the leader.", "title": "seed: multi-tab", "updated_at": "2026-01-01T00:00:03+00:00"}	2026-01-01 00:00:03+00	2026-09-12 13:23:56.876466+00
+1	notes	01980000-0000-7000-8000-000000000001	{"id": "01980000-0000-7000-8000-000000000001", "body": "This note ships with the default database state (scripts/db-default.sql).", "title": "seed: welcome", "updated_at": "2026-01-01T00:00:01+00:00"}	2026-01-01 00:00:01+00	2026-09-12 21:22:01.586822+00
+2	notes	01980000-0000-7000-8000-000000000002	{"id": "01980000-0000-7000-8000-000000000002", "body": "Writes land in local PGlite first, then sync over websocket with LWW.", "title": "seed: offline-first", "updated_at": "2026-01-01T00:00:02+00:00"}	2026-01-01 00:00:02+00	2026-09-12 21:22:01.586822+00
+3	notes	01980000-0000-7000-8000-000000000003	{"id": "01980000-0000-7000-8000-000000000003", "body": "One engine per browser — subordinate tabs proxy to the leader.", "title": "seed: multi-tab", "updated_at": "2026-01-01T00:00:03+00:00"}	2026-01-01 00:00:03+00	2026-09-12 21:22:01.586822+00
 \.
 
 
@@ -317,6 +335,7 @@ COPY public._sqlx_migrations (version, description, installed_on, success, check
 8	0008_notes_timestamptz	2026-01-01 00:00:00+00	t	\\x8a214eb10d3c56806fc67c0c3b04bd3c6ec7715177a53e80e68f7a0f93bb7ac3614a3b02f29b72fbea90e885208254f6	0
 9	0009_pending_batch	2026-01-01 00:00:00+00	t	\\x6dd3e3bb656efb317b040b09719828dbd71ba2360db3f723ff5d0a72935c41646a40fa4655274334387cee9ad33f4fbc	0
 10	0010_quarantine	2026-01-01 00:00:00+00	t	\\x7a067c7a1905939e53bd616184438d682c5d809691edb6cc093e0420572c47d2df791092696888b2a0a79f57c3435d3d	0
+11	0011_sync_log_notify	2026-01-01 00:00:00+00	t	\\x1b584bb5971c14c0e84f921cb4e4c9cec372cf31224537e2d4bcfd2c03078f8207e5baf4b16146c72a5eb3b87e659a93	0
 \.
 
 
@@ -414,6 +433,13 @@ ALTER TABLE ONLY public._sqlx_migrations
 
 ALTER TABLE ONLY public.notes
     ADD CONSTRAINT notes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sync_log sync_log_notify; Type: TRIGGER; Schema: oxylite; Owner: sync
+--
+
+CREATE TRIGGER sync_log_notify AFTER INSERT ON oxylite.sync_log FOR EACH ROW EXECUTE FUNCTION oxylite.notify_sync_log();
 
 
 --

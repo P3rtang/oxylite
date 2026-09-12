@@ -6,6 +6,7 @@ use sqlx::postgres::PgPool;
 // plugs in its tables via the impls below and re-exports the entry
 // points so main.rs and the integration tests keep one module to talk
 // to.
+pub use oxylite::server::{OPS_CHANNEL, spawn_wake_adapter};
 pub use oxylite::server::{SyncError, pull_since};
 pub use oxylite::ws::sync_router;
 

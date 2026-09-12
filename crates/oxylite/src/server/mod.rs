@@ -12,11 +12,12 @@
 //! [`OpApply`] hook, retention, the runtime `apply_one`); [`snapshot`]
 //! the bulk-load pipeline (extract, rebuild, serve); [`session`] the
 //! per-connection protocol state behind a transport loop ([`crate::ws`]
-//! is the axum flavor).
+//! is the axum flavor); [`wake`] the PgListener→bus adapter (2.2).
 
 mod ops;
 mod session;
 mod snapshot;
+mod wake;
 
 pub use ops::{OpApply, apply_one, current_cursor, log_floor, prune_sync_log, pull_since, push};
 pub use session::Session;
@@ -24,6 +25,7 @@ pub use snapshot::{
     SNAPSHOT_AFTER_OPS, SnapshotSource, SyncRowSnapshots, TableRows, load_or_build_snapshot,
     rebuild_snapshots,
 };
+pub use wake::{OPS_CHANNEL, spawn_wake_adapter};
 
 use thiserror::Error;
 
