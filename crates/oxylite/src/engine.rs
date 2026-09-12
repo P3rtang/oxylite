@@ -645,6 +645,17 @@ impl<T: SyncTableWire> Engine<T> {
             .is_some_and(|ws| ws.send_with_str(&text).is_ok())
     }
 
+    /// Drop the sync socket and let `run` reconnect after its backoff —
+    /// the failure-retry driver for a session that cannot make progress
+    /// (a snapshot that failed to apply: the server's once-per-connection
+    /// snapshot flag is spent, so only a fresh session re-serves it, and
+    /// the kept cursor makes that fresh session re-request the state).
+    fn close_socket(&self) {
+        if let Some(ws) = self.sock.borrow_mut().take() {
+            let _ = ws.close();
+        }
+    }
+
     /// Drain the durable op log on connect: resend every pending batch.
     /// Rows are NOT deleted here — retirement is the Ack's job
     /// (`handle_msg`): a send the socket accepted tells us nothing about
@@ -1049,11 +1060,25 @@ impl<T: SyncTableWire> Engine<T> {
                         tombstones.len()
                     ),
                 );
-                // Tombstones go first: the guarded upserts below consult
-                // them, and a pending offline delete must outlive a
-                // snapshot that predates it (upserts never regress).
+                // Any apply failure fails the WHOLE snapshot — the Events
+                // contract (#33) one layer up. The tombstones gate the
+                // guarded upserts (applying rows past a failed tombstone
+                // batch risks resurrections), and a half-applied snapshot
+                // must never advance the cursor past data the client
+                // didn't write: the old order logged, advanced, and
+                // pulled from above every real row — rows stranded
+                // silently. The retry is the reconnect: the cursor keeps
+                // its old value, so the fresh session's Pull re-enters
+                // the server's snapshot/replay decision (its
+                // once-per-connection flag is spent on THIS session,
+                // which is why the socket closes here — a healthy socket
+                // would otherwise idle forever). LAST_ERROR keeps the
+                // reason visible; a persistently poisoned snapshot loops
+                // visibly instead of wedging or diverging.
+                let mut failed: Option<EngineError> = None;
                 if let Err(e) = crate::query::apply_tombstones(db, &tombstones).await {
                     log("sync", &format!("snapshot tombstones apply failed: {e}"));
+                    failed = Some(e);
                 }
                 let mut touched = Vec::with_capacity(rows_count);
                 for table_data in &tables {
@@ -1082,8 +1107,16 @@ impl<T: SyncTableWire> Engine<T> {
                         Ok(ids) => {
                             touched.extend(ids.into_iter().map(|id| (table_data.table, id)));
                         }
-                        Err(e) => log("sync", &format!("snapshot apply failed: {e}")),
+                        Err(e) => {
+                            log("sync", &format!("snapshot apply failed: {e}"));
+                            failed = Some(e);
+                        }
                     }
+                }
+                if let Some(e) = failed {
+                    self.set_last_error(e);
+                    self.close_socket();
+                    return;
                 }
                 self.cursor.set(seq);
                 save_cursor(db, seq).await;
