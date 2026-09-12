@@ -65,24 +65,24 @@ pub async fn pull_since<T: SyncTable>(
     // the data stayed on the server).
     let cursor = rows.last().map(|row| row.seq).unwrap_or(head);
 
-    let mut events = Vec::with_capacity(rows.len());
-    for row in rows {
-        // Unknown table names (newer client) are skipped: this server is
-        // the compat boundary and can't apply what it doesn't know.
-        let Some(table) = T::from_name(&row.table_name) else {
-            continue;
-        };
-        events.push(Op {
-            table,
-            id: row.row_id,
-            data: row.payload,
-            // The op's own timestamp: a delete's payload is null (that
-            // is the marker), so `updated_at` must ride the log row.
-            // Infallible: the column is timestamptz, so the decode is a
-            // real DateTime — the storage layer did the validating.
-            updated_at: Timestamp::from_datetime(row.updated_at),
-        });
-    }
+    // Unknown table names (newer client) are skipped: this server is
+    // the compat boundary and can't apply what it doesn't know.
+    let events: Vec<Op<T>> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let table = T::from_name(&row.table_name)?;
+            Some(Op {
+                table,
+                id: row.row_id,
+                data: row.payload,
+                // The op's own timestamp: a delete's payload is null (that
+                // is the marker), so `updated_at` must ride the log row.
+                // Infallible: the column is timestamptz, so the decode is a
+                // real DateTime — the storage layer did the validating.
+                updated_at: Timestamp::from_datetime(row.updated_at),
+            })
+        })
+        .collect();
 
     Ok((events, cursor))
 }
