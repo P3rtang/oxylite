@@ -16,7 +16,7 @@ use sqlx::postgres::PgPool;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::protocol::ServerMsg;
+use crate::protocol::{SchemaVersion, ServerMsg};
 use crate::server::{OpApply, Session, SnapshotSource, current_cursor, pull_since};
 use crate::table::SyncTableWire;
 
@@ -30,7 +30,7 @@ const STREAM_TICK: Duration = Duration::from_millis(500);
 /// plug-ins are the app's [`OpApply`] + [`SnapshotSource`] impls (ZSTs —
 /// cloned per connection; `Send + Sync` because `&self` crosses awaits
 /// in the session and the on-upgrade future must be Send).
-pub fn sync_router<T, A, S>(db: PgPool, applier: A, source: S) -> Router
+pub fn sync_router<T, A, S>(db: PgPool, applier: A, source: S, version: SchemaVersion) -> Router
 where
     T: SyncTableWire,
     A: OpApply<T> + Clone + Send + Sync + 'static,
@@ -38,7 +38,13 @@ where
 {
     let route = move |ws: WebSocketUpgrade| async move {
         ws.on_upgrade(move |socket| {
-            handle_socket::<T, A, S>(socket, db.clone(), applier.clone(), source.clone())
+            handle_socket::<T, A, S>(
+                socket,
+                db.clone(),
+                applier.clone(),
+                source.clone(),
+                version.clone(),
+            )
         })
     };
     Router::new().route("/sync", get(route))
@@ -53,10 +59,11 @@ async fn handle_socket<
     db: PgPool,
     applier: A,
     source: S,
+    version: SchemaVersion,
 ) {
     // Per-connection protocol state + the app's table plug-ins; the
     // decisions live in the transport-free `Session`.
-    let mut session = Session::new(applier, source);
+    let mut session = Session::new(applier, source, version);
     // Where this connection has streamed so far; starts at the current
     // server cursor so we only push changes that happen *during* this
     // connection. Older events arrive via explicit Pull.
@@ -96,7 +103,16 @@ async fn handle_socket<
                         // errors are logged, the connection stays.
                         match session.on_text(&db, &text).await {
                             Ok(Some(reply)) => {
+                                // An Incompatible handshake closes the
+                                // session right after the frame lands —
+                                // the client reloads (#34).
+                                let incompatible = matches!(reply, ServerMsg::Incompatible { .. });
                                 if !send_msg(&mut socket, &reply).await {
+                                    break;
+                                }
+                                if incompatible {
+                                    // Dropping the socket closes it; the
+                                    // frame already landed.
                                     break;
                                 }
                             }

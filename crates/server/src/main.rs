@@ -41,11 +41,14 @@ async fn main() {
             "/../client/dist"
         )))
         // The WS sync endpoint is a lib drop-in (sync crate, `axum`
-        // feature); the app plugs in its table impls.
+        // feature); the app plugs in its table impls and its schema
+        // version (the Hello handshake's comparison point).
         .merge(sync::sync_router(
             db.clone(),
             sync::Apply,
             sync::SyncRowSnapshots,
+            oxylite::protocol::SchemaVersion::parse(shared::SCHEMA_VERSION)
+                .expect("SCHEMA_VERSION must be MAJOR.MINOR.PATCH"),
         ))
         .layer(tower_http::cors::CorsLayer::permissive());
 

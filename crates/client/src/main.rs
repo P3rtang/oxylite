@@ -15,7 +15,7 @@ use shared::Table;
 
 fn main() {
     console_error_panic_hook::set_once();
-    engine::init::<Table>(shared::MIGRATIONS);
+    engine::init::<Table>(shared::MIGRATIONS, shared::SCHEMA_VERSION);
     engine::<Table>().register_sink(Table::Notes, notes_sink());
     dioxus::launch(App);
 }

@@ -34,7 +34,7 @@ use web_sys::WebSocket;
 use crate::SCHEMA;
 use crate::from_row::{FromRow, RowError};
 use crate::pglite::{self, BridgeError, Pglite};
-use crate::protocol::{ClientMsg, Op, ServerMsg};
+use crate::protocol::{ClientMsg, Op, SchemaVersion, ServerMsg};
 use crate::query::{Query, Subscription, SubscriptionGuard, SubscriptionId};
 use crate::table::SyncTableWire;
 use crate::tabs;
@@ -152,6 +152,8 @@ enum TabMsg {
 pub struct Engine<T: SyncTableWire> {
     /// The app's schema migrations, applied to every fresh local DB.
     migrations: &'static [(&'static str, &'static str)],
+    /// The app's schema version (the app bakes it; the lib compares).
+    version: SchemaVersion,
     /// The socket while a session is open.
     sock: RefCell<Option<web_sys::WebSocket>>,
     /// Server messages parsed by the onmessage callback, awaiting the
@@ -190,10 +192,13 @@ thread_local! {
 /// hooks and callbacks can always reach it. Also joins the cross-tab
 /// channel: from here on every tab participates in the leader election.
 /// `T` is the app's table enum — the ONE instantiation of this library
-/// in the app.
-pub fn init<T: SyncTableWire>(migrations: &'static [(&'static str, &'static str)]) {
+/// in the app. `version` is the app's schema version (`SCHEMA_VERSION`
+/// in shared) — a malformed const is a setup bug and panics, like the
+/// missing-singleton case.
+pub fn init<T: SyncTableWire>(migrations: &'static [(&'static str, &'static str)], version: &str) {
     let singleton: Rc<Engine<T>> = Rc::new(Engine {
         migrations,
+        version: SchemaVersion::parse(version).expect("SCHEMA_VERSION must be MAJOR.MINOR.PATCH"),
         sock: RefCell::new(None),
         inbox: RefCell::new(Vec::new()),
         cursor: Cell::new(-1),
@@ -765,10 +770,33 @@ impl<T: SyncTableWire> Engine<T> {
         }
     }
 
-    /// The leader's lifetime: open THE PGlite instance, serve subordinate
-    /// tab requests, and run the connect/pull/push loop until the tab dies.
+    /// The leader's lifetime: gate the local DB's schema epoch, open THE
+    /// PGlite instance, serve subordinate tab requests, and run the
+    /// connect/pull/push loop until the tab dies.
     async fn run_leader(&self) {
         self.role.set(Some(Role::Leader));
+        // The epoch gate runs before PGlite boots: the IDB version is the
+        // GENERATED id (the migration list's length — monotonic, only
+        // ever appends), and a stored version newer than this bundle's
+        // means this wasm predates the local DB it cannot read (#34).
+        match pglite::ensure_local_compat(pglite::DATA_DIR, self.migrations.len() as u32).await {
+            Ok(()) => {}
+            Err(e) => {
+                log(
+                    "sync",
+                    &format!("local db incompatible with this build: {e:?}"),
+                );
+                if reload_once() {
+                    return; // reloading — the new bundle re-boots cleanly
+                }
+                // Already reloaded once and still stale: the banner IS the
+                // message (D1). The tab stays inert — its DB is unreadable.
+                self.set_status(
+                    "stale build — this tab predates the local database; hard refresh required",
+                );
+                return;
+            }
+        }
         let db = match Pglite::init(self.migrations).await {
             Ok(p) => p,
             Err(e) => {
@@ -893,6 +921,11 @@ impl<T: SyncTableWire> Engine<T> {
                 WebSocket::OPEN => {
                     if !flushed {
                         flushed = true;
+                        // Handshake first: a version-mismatched session
+                        // ends before any Pull/Push work is wasted (#34).
+                        self.send(&ClientMsg::Hello {
+                            version: self.version.clone(),
+                        });
                         self.send(&ClientMsg::Pull {
                             since: self.cursor.get(),
                         });
@@ -911,6 +944,25 @@ impl<T: SyncTableWire> Engine<T> {
 
     async fn handle_msg(&self, db: &Pglite, msg: ServerMsg<T>) {
         match msg {
+            ServerMsg::Ready { version } => {
+                log("sync", &format!("schema handshake ok — server {version}"));
+            }
+            ServerMsg::Incompatible { server, client } => {
+                // The wire gate (D2): this bundle's major.minor is behind
+                // (or ahead of) the server's. One guarded reload picks up
+                // the new bundle AND its migrations; failing that, the
+                // status line is the banner.
+                log(
+                    "sync",
+                    &format!("schema mismatch — server {server}, this build {client}: reloading"),
+                );
+                self.set_status("schema updated — reloading…");
+                if !reload_once() {
+                    self.set_status(
+                        "stale build — reload did not resolve a schema mismatch; hard refresh required",
+                    );
+                }
+            }
             ServerMsg::Ack { batch, .. } => {
                 // The server confirmed this batch: retire its pending
                 // rows. A failed delete is logged — the next flush
@@ -1059,6 +1111,30 @@ pub(crate) fn publish_last_error<T: SyncTableWire>(error: EngineError) {
 pub fn log(kind: &str, msg: &str) {
     web_sys::console::log_1(&JsValue::from_str(&format!("[{kind}] {msg}")));
 }
+
+/// Reload this tab exactly ONCE per browsing session: the guarded
+/// force-update (D1 — "just try and reload the wasm binary"). The
+/// sessionStorage flag breaks any loop a bad cache or a stuck server
+/// could cause; callers fall back to a banner when `false` comes back.
+fn reload_once() -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let storage = window.session_storage().ok().flatten();
+    if storage
+        .as_ref()
+        .is_some_and(|s| s.get_item(RELOAD_FLAG).ok().flatten().is_some())
+    {
+        return false;
+    }
+    if let Some(s) = &storage {
+        let _ = s.set_item(RELOAD_FLAG, "1");
+    }
+    let _ = window.location().reload();
+    true
+}
+
+const RELOAD_FLAG: &str = "oxylite-reload-once";
 
 /// Re-attach typed tables to relayed touched pairs: the tab wire rides
 /// wire names (`SyncTable::as_str`), the engine's internals are typed.

@@ -63,6 +63,14 @@ pub type TableData = oxylite::protocol::TableData<Table>;
 /// live on the generic definition).
 pub type Tombstone = oxylite::protocol::Tombstone<Table>;
 
+/// The app's SCHEMA version, maintained by hand (the lib compares
+/// MAJOR.MINOR on the wire; the local DB's IDB epoch is GENERATED from
+/// the migration count and needs no maintenance — #34). Bump discipline:
+/// MAJOR = breaking change to shipped schema/protocol, MINOR = additive
+/// schema or protocol change (stale tabs reload), PATCH = anything
+/// compatible.
+pub const SCHEMA_VERSION: &str = "1.0.0";
+
 // The demo app's MIGRATION LIST is generated at build time (see
 // build.rs): the UNION of the lib's protocol-table migrations
 // (`../sync/migrations`) and this crate's app-table migrations

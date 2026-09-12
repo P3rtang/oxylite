@@ -88,15 +88,17 @@ async fn log_count(db: &sqlx::PgPool) -> i64 {
 }
 
 #[sqlx::test]
-async fn malformed_payload_is_rejected_and_logs_nothing(pool: sqlx::PgPool) {
+async fn malformed_payload_is_quarantined_and_logged(pool: sqlx::PgPool) {
     server::sync::migrator().run(&pool).await.unwrap();
     // The push door. A malformed ENVELOPE timestamp can no longer be
     // built in Rust at all — `Timestamp` forbids it, and serde validates
     // the WS message before `push` is ever called (pinned in
     // shared/tests/timestamp.rs). The reachable case is a malformed
-    // PAYLOAD: Note's serde validation fails it, and nothing may be
-    // logged or applied — a bad timestamp in sync_log would silently
-    // mis-order every later LWW/tombstone comparison.
+    // PAYLOAD: Note's serde validation fails it. #34 revised the
+    // contract from reject-and-rollback (which wedged the sender: the
+    // op was never acked, so it resent forever, client blind) to
+    // QUARANTINE: the batch commits, the op is logged (the wire
+    // history), the live table is untouched.
     let id = Uuid::now_v7();
     let mut op = upsert_op(id, "poison", T1);
     op.data = serde_json::json!({
@@ -104,16 +106,9 @@ async fn malformed_payload_is_rejected_and_logs_nothing(pool: sqlx::PgPool) {
         "updated_at": "definitely not a time",
     });
 
-    let err = push(&pool, &[op]).await.unwrap_err();
-    assert!(
-        matches!(err, server::sync::SyncError::Json(_)),
-        "err: {err}"
-    );
-    assert!(
-        err.to_string().contains("definitely not a time"),
-        "err: {err}"
-    );
-    assert_eq!(log_count(&pool).await, 0);
+    push(&pool, &[op]).await.unwrap();
+
+    assert_eq!(log_count(&pool).await, 1);
     assert_eq!(live_count(&pool, id).await, 0);
 }
 

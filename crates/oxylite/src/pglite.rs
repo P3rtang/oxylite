@@ -5,6 +5,156 @@ use wasm_bindgen_futures::JsFuture;
 
 use crate::from_row::Row;
 
+/// The PGlite data dir inside IndexedDB (IdbFs) — the epoch gate's
+/// database derives its name from this (`<dir>-epoch`), so the compat
+/// envelope and the data store can never drift apart unnoticed.
+pub const DATA_DIR: &str = "offline_notes";
+
+/// Why the local DB's schema epoch refused this bundle (#34): the stored
+/// IDB version (the GENERATED migration count) is newer than the bundle
+/// knows, or another tab holds the upgrade blocked. Distinct from
+/// BridgeError — the engine's response is policy (one guarded reload,
+/// then a banner), not a retry.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
+pub enum CompatError {
+    #[error("stored schema epoch {stored} is newer than this bundle's {bundle}")]
+    StaleBundle { stored: u32, bundle: u32 },
+    #[error("epoch upgrade blocked — another tab holds an older connection")]
+    Blocked,
+    #[error("epoch gate failed: {0}")]
+    Js(String),
+}
+
+/// The local-DB compatibility gate (#34): open a tiny epoch database with
+/// the GENERATED idb version (the migration list's length — monotonic by
+/// construction) BEFORE PGlite boots. IDB's built-in versioning does the
+/// arbitration: a fresh or higher version upgrades cleanly (`onupgrade
+/// needed`); a stored version newer than the requested one throws
+/// `VersionError` — this wasm predates the local DB it cannot read.
+/// A separate database from PGlite's own IdbFs store, so the gate never
+/// fights PGlite's storage internals.
+pub async fn ensure_local_compat(data_dir: &str, bundle_version: u32) -> Result<(), CompatError> {
+    use wasm_bindgen::prelude::Closure;
+
+    let window = web_sys::window().ok_or_else(|| CompatError::Js("no window".into()))?;
+    let factory = window
+        .indexed_db()
+        .map_err(|e| CompatError::Js(format!("indexed_db unavailable: {e:?}")))?
+        .ok_or_else(|| CompatError::Js("indexed_db null".into()))?;
+
+    let name = format!("{data_dir}-epoch");
+    let req = factory
+        .open_with_u32(&name, bundle_version)
+        .map_err(|e| CompatError::Js(format!("open failed: {e:?}")))?;
+
+    let result: std::rc::Rc<std::cell::RefCell<Option<Result<u32, CompatError>>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+    // One-shot resolve/reject closures; the promise resolves when the
+    // request settles.
+    let (resolve, reject, promise) = {
+        let mut resolve_cb = None;
+        let mut reject_cb = None;
+        let p = js_sys::Promise::new(&mut |res, rej| {
+            resolve_cb = Some(res);
+            reject_cb = Some(rej);
+        });
+        (resolve_cb.unwrap(), reject_cb.unwrap(), p)
+    };
+
+    // onupgradeneeded fires on fresh/upgrade: create the epoch store (an
+    // empty database is legal, but a store gives future epoch records a
+    // home) and let the version land.
+    {
+        let req_cb = req.clone();
+        let on_upgrade = Closure::wrap(Box::new(move |_e: web_sys::Event| {
+            let req = req_cb.clone();
+            if let Ok(Ok(db)) = req.result().map(|v| v.dyn_into::<web_sys::IdbDatabase>()) {
+                let _ = db.create_object_store("epoch");
+            }
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        req.set_onupgradeneeded(Some(on_upgrade.as_ref().unchecked_ref()));
+        on_upgrade.forget();
+    }
+
+    // onsuccess: the database is open at the requested version (or was
+    // upgraded to it). Close immediately — the gate is a check, not a
+    // lease; PGlite opens its own store next.
+    {
+        let result = result.clone();
+        let resolve = resolve.clone();
+        let on_success = Closure::wrap(Box::new(move |_e: web_sys::Event| {
+            *result.borrow_mut() = Some(Ok(bundle_version));
+            let _ = resolve.call0(&JsValue::NULL);
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        req.set_onsuccess(Some(on_success.as_ref().unchecked_ref()));
+        on_success.forget();
+    }
+
+    // onerror: read the request's DOMException — VersionError is the
+    // stale-bundle signature.
+    {
+        let req_cb = req.clone();
+        let result = result.clone();
+        let reject = reject.clone();
+        let on_error = Closure::wrap(Box::new(move |_e: web_sys::Event| {
+            let req = req_cb.clone();
+            *result.borrow_mut() = Some(Err(map_idb_error(&req, bundle_version)));
+            let _ = reject.call0(&JsValue::NULL);
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        req.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+        on_error.forget();
+    }
+
+    // onblocked: another tab holds an older connection open during the
+    // upgrade. The gate is leader-only, and the previous leader's document
+    // death releases its connection — so this is transient; the engine
+    // may retry.
+    {
+        let result = result.clone();
+        let reject = reject.clone();
+        let on_blocked = Closure::wrap(Box::new(move |_e: web_sys::Event| {
+            *result.borrow_mut() = Some(Err(CompatError::Blocked));
+            let _ = reject.call0(&JsValue::NULL);
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        req.set_onblocked(Some(on_blocked.as_ref().unchecked_ref()));
+        on_blocked.forget();
+    }
+
+    JsFuture::from(promise)
+        .await
+        .map_err(|e| CompatError::Js(format!("gate promise rejected: {e:?}")))?;
+    match result.borrow().as_ref() {
+        Some(Ok(_)) => Ok(()),
+        Some(Err(e)) => Err(e.clone()),
+        None => Err(CompatError::Js("gate settled without a result".into())),
+    }
+}
+
+fn map_idb_error(req: &web_sys::IdbOpenDbRequest, bundle_version: u32) -> CompatError {
+    // The stored version is only visible via the error's message text
+    // ("less than the existing version (N)") — parse it when present so
+    // the error carries the numbers, not just the shape.
+    let dom = req.error().ok().flatten();
+    match dom.as_ref().map(|d| d.name()) {
+        Some(name) if name == "VersionError" => {
+            let stored = dom
+                .map(|d| d.message())
+                .and_then(|m| {
+                    m.rsplit('(')
+                        .next()
+                        .and_then(|s| s.trim_end_matches(')').parse().ok())
+                })
+                .unwrap_or(0);
+            CompatError::StaleBundle {
+                stored,
+                bundle: bundle_version,
+            }
+        }
+        Some(name) => CompatError::Js(name.to_string()),
+        None => CompatError::Js("unknown idb error".into()),
+    }
+}
+
 /// Rust bridge to the vendored PGlite (the official ESM bundle copied
 /// verbatim into `crates/client/assets/pglite/`). No JS of our own is
 /// maintained: we instantiate PGlite's own artifact and call its public

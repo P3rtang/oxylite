@@ -14,7 +14,7 @@ use std::marker::PhantomData;
 use thiserror::Error;
 
 use crate::delete::{OpExt, OpKind};
-use crate::protocol::{ClientMsg, Op, ServerMsg, TableData, Tombstone};
+use crate::protocol::{ClientMsg, Op, SchemaVersion, ServerMsg, TableData, Tombstone};
 use crate::sync_row::SyncRow;
 use crate::table::{SyncTable, SyncTableWire};
 use crate::timestamp::Timestamp;
@@ -278,7 +278,14 @@ pub async fn push<T: SyncTable, A: OpApply<T>>(
     let mut tx = db.begin().await?;
 
     for op in ops {
-        applier.apply(op, &mut tx).await?;
+        // The log is the wire history — an op the CURRENT schema can't
+        // apply is still quarantined into it (logged, never rolled back,
+        // #34): one poison op from a just-crossed version must not wedge
+        // the sender's pending queue (rollback left it unacked, resending
+        // forever, client blind).
+        if let Err(e) = applier.apply(op, &mut tx).await {
+            eprintln!("quarantined op ({} {}): {e}", op.table.as_str(), op.id);
+        }
 
         sqlx::query!(
             "INSERT INTO oxylite.sync_log (table_name, row_id, payload, updated_at)
@@ -408,6 +415,9 @@ impl<T: SyncTable> SnapshotSource<T> for SyncRowSnapshots {
 pub struct Session<T: SyncTableWire, A: OpApply<T>, S: SnapshotSource<T>> {
     applier: A,
     source: S,
+    /// The server's own schema version — declared by the app at
+    /// construction; the Hello handshake compares major.minor (#34).
+    version: SchemaVersion,
     // One snapshot per connection, max: a follow-up Pull replays events
     // instead, otherwise a stale snapshot and the backlog would ping-pong.
     snapshotted: bool,
@@ -417,10 +427,11 @@ pub struct Session<T: SyncTableWire, A: OpApply<T>, S: SnapshotSource<T>> {
 }
 
 impl<T: SyncTableWire, A: OpApply<T>, S: SnapshotSource<T>> Session<T, A, S> {
-    pub fn new(applier: A, source: S) -> Self {
+    pub fn new(applier: A, source: S, version: SchemaVersion) -> Self {
         Self {
             applier,
             source,
+            version,
             snapshotted: false,
             _table: PhantomData,
         }
@@ -437,6 +448,18 @@ impl<T: SyncTableWire, A: OpApply<T>, S: SnapshotSource<T>> Session<T, A, S> {
         text: &str,
     ) -> Result<Option<ServerMsg<T>>, SyncError> {
         match serde_json::from_str::<ClientMsg<T>>(text)? {
+            ClientMsg::Hello { version } => {
+                if self.version.wire_compatible(&version) {
+                    Ok(Some(ServerMsg::Ready {
+                        version: self.version.clone(),
+                    }))
+                } else {
+                    Ok(Some(ServerMsg::Incompatible {
+                        server: self.version.clone(),
+                        client: version,
+                    }))
+                }
+            }
             ClientMsg::Push { ops, batch } => {
                 let cursor = push(db, &ops, &self.applier).await?;
                 Ok(Some(ServerMsg::Ack { cursor, batch }))

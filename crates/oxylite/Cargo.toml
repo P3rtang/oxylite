@@ -48,6 +48,14 @@ web-sys = { version = "0.3", optional = true, features = [
     "LockManager",
     "LockOptions",
     "Lock",
+    "Window",
+    "IdbFactory",
+    "IdbOpenDbRequest",
+    "IdbDatabase",
+    "IdbObjectStore",
+    "IdbRequest",
+    "DomException",
+    "Storage",
 ] }
 thiserror = "2"
 axum = { version = "0.8", features = ["ws"], optional = true }
