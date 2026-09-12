@@ -31,7 +31,17 @@ import { expect, test, type Page } from "@playwright/test";
 // carries our row is still an honest upper bound of its delivery).
 
 const WRITES = 10;
-const DELTA_BUDGET_MS = 350;
+// The distribution's shape IS the contract. Notify delivers 9+ of 10
+// writes under 350ms (quiet-run deltas 33–207ms; full-suite load at 3
+// workers 18–141ms), while the 500ms ticker cannot — its tick wait
+// (uniform 0–500ms) makes per-write P ≈ 0.4, so ≥9/10 is ≈0.16% likely.
+// ONE outlier per run is tolerated: a scheduling/pool spike was
+// observed at 1.3s under the FULL suite at max workers — but it must
+// stay far below the 5s fallback tick, whose fingerprint (everything
+// ≥5s) is exactly what the ceiling catches when the wake path is dead.
+const BUDGET_MS = 350;
+const OUTLIERS_ALLOWED = 1;
+const OUTLIER_CEILING_MS = 1500;
 const SANITY_BUDGET_MS = 5_000;
 const CLOCK_SLACK_MS = 10;
 
@@ -106,7 +116,16 @@ test("a committed push is delivered to a connected client within the notify budg
 
   for (const { title, delta } of deltas) {
     console.log(`[push-latency] ${title}: commit→receipt ${delta}ms`);
-    expect(delta, `${title} delivered late`).toBeLessThanOrEqual(DELTA_BUDGET_MS);
+  }
+  const late = deltas.filter(({ delta }) => delta > BUDGET_MS);
+  expect(
+    late.length,
+    `notify regime lost: ${deltas.map(({ delta }) => delta).join(", ")}ms`,
+  ).toBeLessThanOrEqual(OUTLIERS_ALLOWED);
+  for (const { title, delta } of late) {
+    expect(delta, `${title} outlier beyond the ceiling`).toBeLessThanOrEqual(
+      OUTLIER_CEILING_MS,
+    );
   }
 
   await ctxA.close();
