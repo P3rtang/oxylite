@@ -5,10 +5,10 @@
 //! generated statements — one declaration feeds both.
 
 use crate::SCHEMA;
+use crate::client::engine::EngineError;
+use crate::client::pglite::Pglite;
 use crate::contract::sync_row::SyncRow;
 use crate::contract::table::SyncTable;
-use crate::engine::EngineError;
-use crate::pglite::Pglite;
 use crate::protocol::delete::{OpExt, OpKind};
 use crate::protocol::timestamp::Timestamp;
 use crate::protocol::{Op, Tombstone};
@@ -150,7 +150,7 @@ where
 
     if !skipped.is_empty() {
         let first = skipped.first().map(String::as_str).unwrap_or("?");
-        crate::engine::publish_last_error::<T::Table>(EngineError::Sink(format!(
+        crate::client::engine::publish_last_error::<T::Table>(EngineError::Sink(format!(
             "skipped {} unparseable payload row(s); first: {first}",
             skipped.len()
         )));

@@ -45,11 +45,11 @@ use dioxus::prelude::{Global, Signal, WritableExt};
 use uuid::Uuid;
 use wasm_bindgen::{JsCast, JsValue};
 
+use crate::client::pglite::{self, Pglite};
+use crate::client::query::{Query, Subscription, SubscriptionGuard, SubscriptionId};
 use crate::contract::from_row::FromRow;
 use crate::contract::table::SyncTableWire;
-use crate::pglite::{self, Pglite};
 use crate::protocol::{Op, SchemaVersion, ServerMsg};
-use crate::query::{Query, Subscription, SubscriptionGuard, SubscriptionId};
 
 use relay::{Role, TabMsg};
 

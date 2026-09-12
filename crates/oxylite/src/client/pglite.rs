@@ -168,7 +168,10 @@ fn map_idb_error(req: &web_sys::IdbOpenDbRequest, bundle_version: u32) -> Compat
 /// syntax highlighting and lintability; it only touches JS globals
 /// (`__pgliteReady` promise cache), so there is no boundary to keep in
 /// sync — the migrations argument arrives as a JSON array.
-static PGLITE_BOOT_JS: &str = include_str!("../assets/pglite-boot.js");
+static PGLITE_BOOT_JS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/pglite-boot.js"
+));
 
 #[derive(Clone)]
 pub struct Pglite {

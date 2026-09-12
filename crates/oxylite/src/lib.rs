@@ -31,11 +31,7 @@ pub mod contract;
 pub mod protocol;
 
 #[cfg(feature = "client")]
-pub mod engine;
-#[cfg(feature = "client")]
-pub mod pglite;
-#[cfg(feature = "client")]
-pub mod query;
+pub mod client;
 
 #[cfg(feature = "server")]
 pub mod server;
@@ -58,11 +54,11 @@ pub use protocol::{ClientMsg, Op, ServerMsg, TableData, Tombstone};
 pub const SCHEMA: &str = "oxylite";
 
 #[cfg(feature = "client")]
+pub use client::engine::{Engine, EngineError, STATUS, engine, init, timer_pause};
+#[cfg(feature = "client")]
+pub use client::pglite::{BridgeError, Pglite};
+#[cfg(feature = "client")]
 pub use contract::from_row::{FromJs, FromRow, Row, RowError, Type};
-#[cfg(feature = "client")]
-pub use engine::{Engine, EngineError, STATUS, engine, init, timer_pause};
-#[cfg(feature = "client")]
-pub use pglite::{BridgeError, Pglite};
 
 // The lib's own migration list is generated at build time (see
 // build.rs): a scan of migrations/, sorted lexicographically (= applied

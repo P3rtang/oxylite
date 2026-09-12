@@ -12,8 +12,8 @@ use web_sys::WebSocket;
 use super::relay::{Role, TabMsg};
 use super::{Engine, EngineError, engine, log, timer_pause};
 use crate::SCHEMA;
+use crate::client::pglite::{self, Pglite};
 use crate::contract::table::SyncTableWire;
-use crate::pglite::{self, Pglite};
 use crate::protocol::timestamp::Timestamp;
 use crate::protocol::{ClientMsg, Op, ServerMsg};
 
@@ -278,7 +278,7 @@ impl<T: SyncTableWire> Engine<T> {
                 // reason visible; a persistently poisoned snapshot loops
                 // visibly instead of wedging or diverging.
                 let mut failed: Option<EngineError> = None;
-                if let Err(e) = crate::query::apply_tombstones(db, &tombstones).await {
+                if let Err(e) = crate::client::query::apply_tombstones(db, &tombstones).await {
                     log("sync", &format!("snapshot tombstones apply failed: {e}"));
                     failed = Some(e);
                 }

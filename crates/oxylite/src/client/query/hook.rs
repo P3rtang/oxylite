@@ -1,7 +1,7 @@
 //! Dioxus hooks: live, typed reads over the engine.
 
+use crate::client::engine::{EngineError, engine, log};
 use crate::contract::table::{SyncTable, SyncTableWire};
-use crate::engine::{EngineError, engine, log};
 use dioxus::prelude::*;
 
 use super::dep::Dep;

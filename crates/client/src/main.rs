@@ -8,8 +8,8 @@ mod notify;
 use dioxus::prelude::*;
 use notes::{Note, display_time, new_note, notes_sink, op_for_delete, op_for_note};
 use notify::{Notice, NoticeOverlay, notify};
-use oxylite::engine::{self, EngineError, engine};
-use oxylite::query::use_select_all;
+use oxylite::client::engine::{self, EngineError, engine};
+use oxylite::client::query::use_select_all;
 use shared::SyncRow;
 use shared::Table;
 
