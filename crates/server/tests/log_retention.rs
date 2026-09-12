@@ -97,7 +97,8 @@ async fn a_client_below_the_pruned_floor_gets_a_snapshot(pool: sqlx::PgPool) {
     let mut session = Session::new(
         server::sync::Apply,
         server::sync::SyncRowSnapshots,
-        oxylite::protocol::SchemaVersion::parse("1.0.0").unwrap(),
+        oxylite::protocol::SchemaVersion::parse(shared::SCHEMA_VERSION)
+            .expect("The version of the project does not match the major.minor.patch standard. This is required for schema alignment between server and client."),
     );
 
     // A stone-age client (cursor 0, below the floor): SNAPSHOT, full state.
@@ -110,7 +111,7 @@ async fn a_client_below_the_pruned_floor_gets_a_snapshot(pool: sqlx::PgPool) {
     let mut session = Session::new(
         server::sync::Apply,
         server::sync::SyncRowSnapshots,
-        oxylite::protocol::SchemaVersion::parse("1.0.0").unwrap(),
+        oxylite::protocol::SchemaVersion::parse(shared::SCHEMA_VERSION).unwrap(),
     );
     let pull = serde_json::to_string(&ClientMsg::<Table>::Pull { since: 1 }).unwrap();
     let reply = session.on_text(&pool, &pull).await.unwrap().unwrap();
