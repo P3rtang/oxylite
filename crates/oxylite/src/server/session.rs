@@ -11,8 +11,8 @@ use std::marker::PhantomData;
 use super::SyncError;
 use super::ops::{OpApply, current_cursor, log_floor, pull_since, push};
 use super::snapshot::{SNAPSHOT_AFTER_OPS, SnapshotSource, load_or_build_snapshot};
+use crate::contract::table::{SyncTable, SyncTableWire};
 use crate::protocol::{ClientMsg, SchemaVersion, ServerMsg, TableData};
-use crate::table::{SyncTable, SyncTableWire};
 
 pub struct Session<T: SyncTableWire, A: OpApply<T>, S: SnapshotSource<T>> {
     applier: A,

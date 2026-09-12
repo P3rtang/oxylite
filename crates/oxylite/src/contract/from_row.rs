@@ -71,7 +71,7 @@ impl fmt::Display for Type {
 
 #[cfg(feature = "client")]
 mod client {
-    use crate::from_row::{RowError, Type};
+    use crate::contract::from_row::{RowError, Type};
     use wasm_bindgen::{JsCast as _, JsValue};
 
     /// A raw row from the local DB: a JS object keyed by column name. A
@@ -182,7 +182,7 @@ mod client {
     /// Row -> typed result, mirroring sqlx's `FromRow`. The engine stays
     /// row-generic; result types own their conversion.
     pub trait FromRow: Sized {
-        fn from_row(row: &Row) -> Result<Self, crate::from_row::RowError>;
+        fn from_row(row: &Row) -> Result<Self, crate::contract::from_row::RowError>;
     }
 
     /// The type family of a value that fell through the typed reader's

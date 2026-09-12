@@ -3,7 +3,7 @@ use js_sys::{Function, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
-use crate::from_row::Row;
+use crate::contract::from_row::Row;
 
 /// The PGlite data dir inside IndexedDB (IdbFs) — the epoch gate's
 /// database derives its name from this (`<dir>-epoch`), so the compat

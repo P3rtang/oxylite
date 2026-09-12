@@ -1,7 +1,7 @@
 //! Server-side sync machinery (feature `server`): the snapshot pipeline
 //! every backend of this protocol needs, generic over the app's table
 //! type. Tables are defined by the implementing repo — they derive
-//! `enum_iterator::Sequence`, implement [`crate::table::SyncTable`] for
+//! `enum_iterator::Sequence`, implement [`crate::contract::table::SyncTable`] for
 //! the wire names, and implement [`SnapshotSource`] for the per-table
 //! extraction (which stays app-side: that's where the sqlx macros can
 //! see the SQL literals, and where the exhaustive match forces new

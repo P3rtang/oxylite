@@ -10,8 +10,8 @@ use sqlx::postgres::{PgConnection, PgPool};
 use std::future::Future;
 
 use super::ops::current_cursor;
+use crate::contract::table::SyncTable;
 use crate::protocol::Tombstone;
-use crate::table::SyncTable;
 use crate::timestamp::Timestamp;
 
 /// Replay is fine for small backlogs, but a client that is more than this

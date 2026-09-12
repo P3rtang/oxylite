@@ -5,12 +5,12 @@
 //! generated statements — one declaration feeds both.
 
 use crate::SCHEMA;
+use crate::contract::sync_row::SyncRow;
+use crate::contract::table::SyncTable;
 use crate::delete::{OpExt, OpKind};
 use crate::engine::EngineError;
 use crate::pglite::Pglite;
 use crate::protocol::{Op, Tombstone};
-use crate::sync_row::SyncRow;
-use crate::table::SyncTable;
 use crate::timestamp::Timestamp;
 use uuid::Uuid;
 

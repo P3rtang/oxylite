@@ -1,13 +1,13 @@
 //! Dioxus hooks: live, typed reads over the engine.
 
+use crate::contract::table::{SyncTable, SyncTableWire};
 use crate::engine::{EngineError, engine, log};
-use crate::table::{SyncTable, SyncTableWire};
 use dioxus::prelude::*;
 
 use super::dep::Dep;
 use super::statement::Query;
-use crate::from_row::FromRow;
-use crate::sync_row::SyncRow;
+use crate::contract::from_row::FromRow;
+use crate::contract::sync_row::SyncRow;
 
 /// Dioxus hook: run a query once now, then re-run whenever its deps fire
 /// (locally or via server events). Unregisters on unmount via the

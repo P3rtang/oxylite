@@ -16,7 +16,7 @@
 //! side.
 
 use crate::SCHEMA;
-use crate::table::{SyncTable, SyncTableWire};
+use crate::contract::table::{SyncTable, SyncTableWire};
 use uuid::Uuid;
 
 /// The contract a synced row type fulfills. Reads are a separate

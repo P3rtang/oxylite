@@ -9,11 +9,11 @@ use uuid::Uuid;
 use wasm_bindgen::JsValue;
 
 use super::{Engine, EngineError, LAST_ERROR, STATUS, log, timer_pause};
-use crate::from_row::FromRow;
+use crate::contract::from_row::FromRow;
+use crate::contract::table::SyncTableWire;
 use crate::pglite::{self, BridgeError, Pglite};
 use crate::protocol::Op;
 use crate::query::Query;
-use crate::table::SyncTableWire;
 
 /// This tab's role in the browser. Exactly one leader holds the Web Lock;
 /// subordinates proxy every DB access to it.

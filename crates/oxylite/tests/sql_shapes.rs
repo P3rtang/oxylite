@@ -12,8 +12,8 @@
 //! this shape, and the pins travel with the lib.
 
 use enum_iterator::Sequence;
-use oxylite::sync_row::SyncRow;
-use oxylite::table::SyncTable;
+use oxylite::contract::sync_row::SyncRow;
+use oxylite::contract::table::SyncTable;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

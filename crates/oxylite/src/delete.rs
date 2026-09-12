@@ -8,8 +8,8 @@
 //! data: null }` on the existing Push path. The null payload is the
 //! marker: there is no row state to ship, only the fact of removal.
 
+use crate::contract::table::SyncTable;
 use crate::protocol::Op;
-use crate::table::SyncTable;
 use crate::timestamp::Timestamp;
 
 /// Whether an `Op` upserts row state or deletes its row.

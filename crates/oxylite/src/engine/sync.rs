@@ -12,9 +12,9 @@ use web_sys::WebSocket;
 use super::relay::{Role, TabMsg};
 use super::{Engine, EngineError, engine, log, timer_pause};
 use crate::SCHEMA;
+use crate::contract::table::SyncTableWire;
 use crate::pglite::{self, Pglite};
 use crate::protocol::{ClientMsg, Op, ServerMsg};
-use crate::table::SyncTableWire;
 use crate::timestamp::Timestamp;
 
 use super::tabs;

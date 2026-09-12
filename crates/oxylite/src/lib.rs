@@ -24,16 +24,13 @@
 //! separate features by design — a future actix backend would add its
 //! own module over the same core.
 
-// ---- the protocol core: ungated, pure (serde/uuid/chrono only) ----
+// ---- the protocol core: wire DTOs, plug-in contracts, op semantics,
+// timestamp — pure except the client-gated read decode ----
 
+pub mod contract;
 pub mod delete;
 pub mod protocol;
-pub mod sync_row;
-pub mod table;
 pub mod timestamp;
-
-#[cfg(feature = "client")]
-pub mod from_row;
 
 #[cfg(feature = "client")]
 pub mod engine;
@@ -48,9 +45,9 @@ pub mod server;
 #[cfg(feature = "axum")]
 pub mod ws;
 
+pub use contract::sync_row::SyncRow;
+pub use contract::table::{SyncTable, SyncTableWire};
 pub use protocol::{ClientMsg, Op, ServerMsg, TableData, Tombstone};
-pub use sync_row::SyncRow;
-pub use table::{SyncTable, SyncTableWire};
 pub use timestamp::{Timestamp, TimestampError};
 
 /// The Postgres schema (namespace) the lib owns on BOTH sides — the
@@ -63,9 +60,9 @@ pub use timestamp::{Timestamp, TimestampError};
 pub const SCHEMA: &str = "oxylite";
 
 #[cfg(feature = "client")]
-pub use engine::{Engine, EngineError, STATUS, engine, init, timer_pause};
+pub use contract::from_row::{FromJs, FromRow, Row, RowError, Type};
 #[cfg(feature = "client")]
-pub use from_row::{FromJs, FromRow, Row, RowError, Type};
+pub use engine::{Engine, EngineError, STATUS, engine, init, timer_pause};
 #[cfg(feature = "client")]
 pub use pglite::{BridgeError, Pglite};
 

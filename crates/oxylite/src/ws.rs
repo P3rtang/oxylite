@@ -16,9 +16,9 @@ use sqlx::postgres::PgPool;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+use crate::contract::table::SyncTableWire;
 use crate::protocol::{SchemaVersion, ServerMsg};
 use crate::server::{OpApply, Session, SnapshotSource, current_cursor, pull_since};
-use crate::table::SyncTableWire;
 
 /// Ticker cadence: stream any server changes to connected sockets. The
 /// mechanism is a DB poll today — ROADMAP 2.2 (Postgres pub/sub)

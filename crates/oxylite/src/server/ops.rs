@@ -10,10 +10,10 @@ use sqlx::postgres::{PgConnection, PgPool};
 use std::future::Future;
 
 use super::SyncError;
+use crate::contract::sync_row::SyncRow;
+use crate::contract::table::SyncTable;
 use crate::delete::{OpExt, OpKind};
 use crate::protocol::Op;
-use crate::sync_row::SyncRow;
-use crate::table::SyncTable;
 use crate::timestamp::Timestamp;
 
 /// The server's cursor: the newest seq in the sync log.

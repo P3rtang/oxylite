@@ -3,7 +3,7 @@
 //! Serializable: apply failures relay to subordinate tabs over
 //! BroadcastChannel (the notice overlay must work in every tab).
 
-use crate::from_row::RowError;
+use crate::contract::from_row::RowError;
 use crate::pglite::BridgeError;
 use crate::protocol::SchemaVersionError;
 

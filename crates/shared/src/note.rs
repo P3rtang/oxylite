@@ -7,7 +7,7 @@
 //! client-only (feature `client`).
 
 use crate::Table;
-use oxylite::sync_row::SyncRow;
+use oxylite::contract::sync_row::SyncRow;
 use oxylite::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -48,7 +48,7 @@ mod client {
     //! Rows come back as JS objects; Note knows how to build itself.
 
     use super::Note;
-    use oxylite::from_row::{FromRow, Row, RowError};
+    use oxylite::contract::from_row::{FromRow, Row, RowError};
     use oxylite::timestamp::Timestamp;
 
     impl FromRow for Note {

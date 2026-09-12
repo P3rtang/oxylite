@@ -20,7 +20,7 @@ enum FixtureTable {
 
 type Op = oxylite::protocol::Op<FixtureTable>;
 
-impl oxylite::table::SyncTable for FixtureTable {
+impl oxylite::contract::table::SyncTable for FixtureTable {
     fn as_str(self) -> &'static str {
         "notes"
     }
