@@ -7,6 +7,7 @@
 //! and where the exhaustive match forces new tables to be handled).
 //! The `sync_log`/`snapshots` schema comes from the lib's own migrations.
 
+use chrono::{DateTime, Utc};
 use enum_iterator::all;
 use sqlx::postgres::{PgConnection, PgPool};
 use std::future::Future;
@@ -192,6 +193,16 @@ pub enum SyncError {
     Json(#[from] serde_json::Error),
 }
 
+/// The log's surviving floor: the earliest seq a replay could start
+/// from (`None` on an empty log). The pruning gate reads it (#35).
+pub async fn log_floor(db: &PgPool) -> Result<Option<i64>, SyncError> {
+    let floor: Option<i64> =
+        sqlx::query_scalar!(r#"SELECT MIN(seq) as "min" FROM oxylite.sync_log"#)
+            .fetch_one(db)
+            .await?;
+    Ok(floor)
+}
+
 /// Events after `since`, windowed, with the seq the batch reaches.
 /// Protocol machinery, not app code: this touches only `sync_log` —
 /// the log's schema is the lib's own (lib migrations), so the whole
@@ -278,13 +289,28 @@ pub async fn push<T: SyncTable, A: OpApply<T>>(
     let mut tx = db.begin().await?;
 
     for op in ops {
-        // The log is the wire history — an op the CURRENT schema can't
-        // apply is still quarantined into it (logged, never rolled back,
-        // #34): one poison op from a just-crossed version must not wedge
-        // the sender's pending queue (rollback left it unacked, resending
-        // forever, client blind).
+        // An op the CURRENT schema cannot apply is quarantined (roadmap
+        // 3.3): the batch commits, the sender is never wedged (a rollback
+        // would leave the op unacked, resending forever, client blind),
+        // and the error surfaces through the sender's own echo. The op
+        // does NOT enter sync_log — a payload no compatible client can
+        // apply is not replayable history; #34's floor narrows to "the
+        // log is the APPLYABLE history".
         if let Err(e) = applier.apply(op, &mut tx).await {
             eprintln!("quarantined op ({} {}): {e}", op.table.as_str(), op.id);
+            sqlx::query!(
+                "INSERT INTO oxylite.quarantine
+                 (table_name, row_id, payload, updated_at, error)
+                 VALUES ($1, $2, $3, $4, $5)",
+                op.table.as_str(),
+                op.id,
+                op.data,
+                op.updated_at.as_datetime(),
+                e.to_string(),
+            )
+            .execute(&mut *tx)
+            .await?;
+            continue;
         }
 
         sqlx::query!(
@@ -309,6 +335,21 @@ pub async fn push<T: SyncTable, A: OpApply<T>>(
 
     tx.commit().await?;
     Ok(cursor)
+}
+
+/// Delete log rows older than `cutoff` (server-arrival `logged_at`).
+/// The pure retention operation — mechanism-free by design: NO scheduler
+/// lives in this codebase. A cron task, an event-bus consumer, an ops
+/// script, or pg_cron wires it in with one call (reviewer, #35:
+/// age-based pruning only "when we have an event bus or a cron task
+/// system"). Safe against any client age: `pull_since` clamps to the
+/// surviving floor, so a pruned-behind client replays overlap instead
+/// of silently skipping the pruned stretch.
+pub async fn prune_sync_log(db: &PgPool, cutoff: DateTime<Utc>) -> Result<u64, SyncError> {
+    let result = sqlx::query!("DELETE FROM oxylite.sync_log WHERE logged_at < $1", cutoff)
+        .execute(db)
+        .await?;
+    Ok(result.rows_affected())
 }
 
 /// Full state for a far-behind client, wire-shaped: the generic
@@ -468,9 +509,17 @@ impl<T: SyncTableWire, A: OpApply<T>, S: SnapshotSource<T>> Session<T, A, S> {
                 // Far behind? Replay would be one upsert per logged op —
                 // hand over a snapshot instead (once per connection; a
                 // follow-up Pull replays events, so snapshot and backlog
-                // can't ping-pong).
+                // can't ping-pong). #35 adds the PRUNED-FLOOR trigger: a
+                // client whose next needed seq (since + 1) was pruned away
+                // never learned those state changes — replaying from any
+                // surviving seq would diverge, so the snapshot is not
+                // optional for it. (The once-per-connection guard stays:
+                // after a snapshot the cursor is the snapshot seq, which
+                // postdates the floor, so the case cannot recur.)
                 let head = current_cursor(db).await;
-                if head - since > SNAPSHOT_AFTER_OPS && !self.snapshotted {
+                let floor = log_floor(db).await?;
+                let pruned_away = floor.is_some_and(|f| since + 1 < f);
+                if (head - since > SNAPSHOT_AFTER_OPS || pruned_away) && !self.snapshotted {
                     self.snapshotted = true;
                     Ok(Some(snapshot_msg(db, &self.source).await?))
                 } else {

@@ -21,9 +21,11 @@ ALTER TABLE IF EXISTS ONLY public._sqlx_migrations DROP CONSTRAINT IF EXISTS _sq
 ALTER TABLE IF EXISTS ONLY oxylite.tombstones DROP CONSTRAINT IF EXISTS tombstones_pkey;
 ALTER TABLE IF EXISTS ONLY oxylite.sync_log DROP CONSTRAINT IF EXISTS sync_log_pkey;
 ALTER TABLE IF EXISTS ONLY oxylite.snapshots DROP CONSTRAINT IF EXISTS snapshots_pkey;
+ALTER TABLE IF EXISTS ONLY oxylite.quarantine DROP CONSTRAINT IF EXISTS quarantine_pkey;
 ALTER TABLE IF EXISTS ONLY oxylite.pending_ops DROP CONSTRAINT IF EXISTS pending_ops_pkey;
 ALTER TABLE IF EXISTS ONLY oxylite.meta DROP CONSTRAINT IF EXISTS meta_pkey;
 ALTER TABLE IF EXISTS oxylite.sync_log ALTER COLUMN seq DROP DEFAULT;
+ALTER TABLE IF EXISTS oxylite.quarantine ALTER COLUMN seq DROP DEFAULT;
 ALTER TABLE IF EXISTS oxylite.pending_ops ALTER COLUMN seq DROP DEFAULT;
 DROP TABLE IF EXISTS public.notes;
 DROP TABLE IF EXISTS public._sqlx_migrations;
@@ -31,6 +33,8 @@ DROP TABLE IF EXISTS oxylite.tombstones;
 DROP SEQUENCE IF EXISTS oxylite.sync_log_seq_seq;
 DROP TABLE IF EXISTS oxylite.sync_log;
 DROP TABLE IF EXISTS oxylite.snapshots;
+DROP SEQUENCE IF EXISTS oxylite.quarantine_seq_seq;
+DROP TABLE IF EXISTS oxylite.quarantine;
 DROP SEQUENCE IF EXISTS oxylite.pending_ops_seq_seq;
 DROP TABLE IF EXISTS oxylite.pending_ops;
 DROP TABLE IF EXISTS oxylite.meta;
@@ -95,6 +99,44 @@ ALTER SEQUENCE oxylite.pending_ops_seq_seq OWNED BY oxylite.pending_ops.seq;
 
 
 --
+-- Name: quarantine; Type: TABLE; Schema: oxylite; Owner: sync
+--
+
+CREATE TABLE oxylite.quarantine (
+    seq bigint NOT NULL,
+    table_name text NOT NULL,
+    row_id uuid NOT NULL,
+    payload jsonb NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    error text NOT NULL,
+    logged_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+ALTER TABLE oxylite.quarantine OWNER TO sync;
+
+--
+-- Name: quarantine_seq_seq; Type: SEQUENCE; Schema: oxylite; Owner: sync
+--
+
+CREATE SEQUENCE oxylite.quarantine_seq_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE oxylite.quarantine_seq_seq OWNER TO sync;
+
+--
+-- Name: quarantine_seq_seq; Type: SEQUENCE OWNED BY; Schema: oxylite; Owner: sync
+--
+
+ALTER SEQUENCE oxylite.quarantine_seq_seq OWNED BY oxylite.quarantine.seq;
+
+
+--
 -- Name: snapshots; Type: TABLE; Schema: oxylite; Owner: sync
 --
 
@@ -117,7 +159,8 @@ CREATE TABLE oxylite.sync_log (
     table_name text NOT NULL,
     row_id uuid NOT NULL,
     payload jsonb NOT NULL,
-    updated_at timestamp with time zone NOT NULL
+    updated_at timestamp with time zone NOT NULL,
+    logged_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -195,6 +238,13 @@ ALTER TABLE ONLY oxylite.pending_ops ALTER COLUMN seq SET DEFAULT nextval('oxyli
 
 
 --
+-- Name: quarantine seq; Type: DEFAULT; Schema: oxylite; Owner: sync
+--
+
+ALTER TABLE ONLY oxylite.quarantine ALTER COLUMN seq SET DEFAULT nextval('oxylite.quarantine_seq_seq'::regclass);
+
+
+--
 -- Name: sync_log seq; Type: DEFAULT; Schema: oxylite; Owner: sync
 --
 
@@ -218,6 +268,14 @@ COPY oxylite.pending_ops (seq, op, batch_id) FROM stdin;
 
 
 --
+-- Data for Name: quarantine; Type: TABLE DATA; Schema: oxylite; Owner: sync
+--
+
+COPY oxylite.quarantine (seq, table_name, row_id, payload, updated_at, error, logged_at) FROM stdin;
+\.
+
+
+--
 -- Data for Name: snapshots; Type: TABLE DATA; Schema: oxylite; Owner: sync
 --
 
@@ -229,10 +287,10 @@ COPY oxylite.snapshots (table_name, seq, created_at, data) FROM stdin;
 -- Data for Name: sync_log; Type: TABLE DATA; Schema: oxylite; Owner: sync
 --
 
-COPY oxylite.sync_log (seq, table_name, row_id, payload, updated_at) FROM stdin;
-1	notes	01980000-0000-7000-8000-000000000001	{"id": "01980000-0000-7000-8000-000000000001", "body": "This note ships with the default database state (scripts/db-default.sql).", "title": "seed: welcome", "updated_at": "2026-01-01T00:00:01+00:00"}	2026-01-01 00:00:01+00
-2	notes	01980000-0000-7000-8000-000000000002	{"id": "01980000-0000-7000-8000-000000000002", "body": "Writes land in local PGlite first, then sync over websocket with LWW.", "title": "seed: offline-first", "updated_at": "2026-01-01T00:00:02+00:00"}	2026-01-01 00:00:02+00
-3	notes	01980000-0000-7000-8000-000000000003	{"id": "01980000-0000-7000-8000-000000000003", "body": "One engine per browser — subordinate tabs proxy to the leader.", "title": "seed: multi-tab", "updated_at": "2026-01-01T00:00:03+00:00"}	2026-01-01 00:00:03+00
+COPY oxylite.sync_log (seq, table_name, row_id, payload, updated_at, logged_at) FROM stdin;
+1	notes	01980000-0000-7000-8000-000000000001	{"id": "01980000-0000-7000-8000-000000000001", "body": "This note ships with the default database state (scripts/db-default.sql).", "title": "seed: welcome", "updated_at": "2026-01-01T00:00:01+00:00"}	2026-01-01 00:00:01+00	2026-09-12 13:23:56.876466+00
+2	notes	01980000-0000-7000-8000-000000000002	{"id": "01980000-0000-7000-8000-000000000002", "body": "Writes land in local PGlite first, then sync over websocket with LWW.", "title": "seed: offline-first", "updated_at": "2026-01-01T00:00:02+00:00"}	2026-01-01 00:00:02+00	2026-09-12 13:23:56.876466+00
+3	notes	01980000-0000-7000-8000-000000000003	{"id": "01980000-0000-7000-8000-000000000003", "body": "One engine per browser — subordinate tabs proxy to the leader.", "title": "seed: multi-tab", "updated_at": "2026-01-01T00:00:03+00:00"}	2026-01-01 00:00:03+00	2026-09-12 13:23:56.876466+00
 \.
 
 
@@ -258,6 +316,7 @@ COPY public._sqlx_migrations (version, description, installed_on, success, check
 7	0007_protocol_timestamps	2026-01-01 00:00:00+00	t	\\xd0abdbec32d884f1bb21daf2282daba44aa7634375f08185fee230e6ea4dc444e6a95eaf59cd39aae1a4f364ba10a601	0
 8	0008_notes_timestamptz	2026-01-01 00:00:00+00	t	\\x8a214eb10d3c56806fc67c0c3b04bd3c6ec7715177a53e80e68f7a0f93bb7ac3614a3b02f29b72fbea90e885208254f6	0
 9	0009_pending_batch	2026-01-01 00:00:00+00	t	\\x6dd3e3bb656efb317b040b09719828dbd71ba2360db3f723ff5d0a72935c41646a40fa4655274334387cee9ad33f4fbc	0
+10	0010_quarantine	2026-01-01 00:00:00+00	t	\\x7a067c7a1905939e53bd616184438d682c5d809691edb6cc093e0420572c47d2df791092696888b2a0a79f57c3435d3d	0
 \.
 
 
@@ -277,6 +336,13 @@ COPY public.notes (id, title, body, updated_at) FROM stdin;
 --
 
 SELECT pg_catalog.setval('oxylite.pending_ops_seq_seq', 1, false);
+
+
+--
+-- Name: quarantine_seq_seq; Type: SEQUENCE SET; Schema: oxylite; Owner: sync
+--
+
+SELECT pg_catalog.setval('oxylite.quarantine_seq_seq', 1, false);
 
 
 --
@@ -300,6 +366,14 @@ ALTER TABLE ONLY oxylite.meta
 
 ALTER TABLE ONLY oxylite.pending_ops
     ADD CONSTRAINT pending_ops_pkey PRIMARY KEY (seq);
+
+
+--
+-- Name: quarantine quarantine_pkey; Type: CONSTRAINT; Schema: oxylite; Owner: sync
+--
+
+ALTER TABLE ONLY oxylite.quarantine
+    ADD CONSTRAINT quarantine_pkey PRIMARY KEY (seq);
 
 
 --

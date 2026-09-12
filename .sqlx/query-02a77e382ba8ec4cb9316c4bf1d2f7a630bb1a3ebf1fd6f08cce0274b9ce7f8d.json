@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO oxylite.quarantine\n                 (table_name, row_id, payload, updated_at, error)\n                 VALUES ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Jsonb",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "02a77e382ba8ec4cb9316c4bf1d2f7a630bb1a3ebf1fd6f08cce0274b9ce7f8d"
+}

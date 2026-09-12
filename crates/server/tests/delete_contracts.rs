@@ -88,17 +88,17 @@ async fn log_count(db: &sqlx::PgPool) -> i64 {
 }
 
 #[sqlx::test]
-async fn malformed_payload_is_quarantined_and_logged(pool: sqlx::PgPool) {
+async fn malformed_payload_is_quarantined_into_quarantine(pool: sqlx::PgPool) {
     server::sync::migrator().run(&pool).await.unwrap();
     // The push door. A malformed ENVELOPE timestamp can no longer be
     // built in Rust at all — `Timestamp` forbids it, and serde validates
     // the WS message before `push` is ever called (pinned in
     // shared/tests/timestamp.rs). The reachable case is a malformed
-    // PAYLOAD: Note's serde validation fails it. #34 revised the
-    // contract from reject-and-rollback (which wedged the sender: the
-    // op was never acked, so it resent forever, client blind) to
-    // QUARANTINE: the batch commits, the op is logged (the wire
-    // history), the live table is untouched.
+    // PAYLOAD: Note's serde validation fails it. #34 made poison
+    // non-wedging; #35 (D1) moves it OUT of sync_log — a payload no
+    // compatible client can apply is not replayable history, and every
+    // cold client re-parsed it per boot. The batch still commits; the
+    // log holds only APPLYABLE ops.
     let id = Uuid::now_v7();
     let mut op = upsert_op(id, "poison", T1);
     op.data = serde_json::json!({
@@ -108,7 +108,15 @@ async fn malformed_payload_is_quarantined_and_logged(pool: sqlx::PgPool) {
 
     push(&pool, &[op]).await.unwrap();
 
-    assert_eq!(log_count(&pool).await, 1);
+    let quarantine: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*)::bigint FROM oxylite.quarantine WHERE row_id = '{}'",
+        id
+    ))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(quarantine, 1);
+    assert_eq!(log_count(&pool).await, 0);
     assert_eq!(live_count(&pool, id).await, 0);
 }
 
