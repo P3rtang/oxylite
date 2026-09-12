@@ -15,15 +15,33 @@ use axum::{
 use sqlx::postgres::PgPool;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 use crate::contract::table::SyncTableWire;
 use crate::protocol::{SchemaVersion, ServerMsg};
-use crate::server::{OpApply, Session, SnapshotSource, current_cursor, pull_since};
+use crate::server::{OpApply, Session, SnapshotSource, SyncError, current_cursor, pull_since};
 
 /// Ticker cadence: stream any server changes to connected sockets. The
 /// mechanism is a DB poll today — ROADMAP 2.2 (Postgres pub/sub)
-/// replaces the mechanism without touching the loop shape.
+/// replaces the mechanism. The loop shape's invariant: a session that
+/// cannot READ the log ends itself (stream failures are surfaced as a
+/// disconnect, never streamed past silently — 2026-09-12).
 const STREAM_TICK: Duration = Duration::from_millis(500);
+
+/// Bound on ONE ticker pull: a vanished DB (stopped container, dropped
+/// forward) does not always RST established connections — the query can
+/// hang silently on a black-holed socket, which is WORSE than an error
+/// (nothing surfaces at all). The bound turns the hang into a stream
+/// failure like any other. 2s = 4 ticks.
+const TICKER_PULL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Bound on ONE client-driven DB operation inside the session (the
+/// Push/Pull handlers, snapshot serving). Same reasoning: a hung
+/// handler would wedge the whole select! loop (the Dead tick could
+/// never be processed) and strand the client waiting for an Ack that
+/// never comes. Generous — a push transaction may legitimately take a
+/// moment — but finite.
+const SESSION_OP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The WS route any axum backend mounts, e.g.
 /// `Router::new().merge(sync_router(db, Apply, Snapshots))`. The
@@ -50,6 +68,18 @@ where
     Router::new().route("/sync", get(route))
 }
 
+/// What the ticker hands the socket loop. `Dead` is the stream-failure
+/// signal: the session must END, because a session that cannot read the
+/// log is half-alive — it looks connected to the client while silently
+/// starving it (the server-side twin of the #36 snapshot lesson). The
+/// client's existing reconnect machinery is the surface: disconnect →
+/// retry → a persistent failure renders as `offline — will retry…`
+/// instead of a healthy-looking dead stream. No wire message needed.
+enum Tick<T: SyncTableWire> {
+    Msg(ServerMsg<T>),
+    Dead,
+}
+
 async fn handle_socket<
     T: SyncTableWire,
     A: OpApply<T> + Send + Sync,
@@ -66,10 +96,14 @@ async fn handle_socket<
     let mut session = Session::new(applier, source, version);
     // Where this connection has streamed so far; starts at the current
     // server cursor so we only push changes that happen *during* this
-    // connection. Older events arrive via explicit Pull.
-    let mut stream_cursor = current_cursor(&db).await;
+    // connection. Older events arrive via explicit Pull. Bound like
+    // every other DB op: on a vanished DB this returns 0 and the
+    // ticker's own timeout ends the session momentarily.
+    let mut stream_cursor = timeout(TICKER_PULL_TIMEOUT, current_cursor(&db))
+        .await
+        .unwrap_or(0);
 
-    let (out_tx, mut out_rx) = mpsc::channel::<ServerMsg<T>>(64);
+    let (out_tx, mut out_rx) = mpsc::channel::<Tick<T>>(64);
 
     // Ticker: stream any server changes to this connection.
     let ticker_db = db.clone();
@@ -78,31 +112,65 @@ async fn handle_socket<
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            match pull_since::<T>(&ticker_db, stream_cursor).await {
-                Ok((events, cursor)) if !events.is_empty() => {
+            // The pull is bound: an error OR a hang (black-holed DB) is
+            // a stream failure — printed for the operator (structured
+            // logging is 3.2) and surfaced as Dead, ending the session
+            // so the client reconnects into a truth it can see.
+            match timeout(
+                TICKER_PULL_TIMEOUT,
+                pull_since::<T>(&ticker_db, stream_cursor),
+            )
+            .await
+            {
+                Ok(Ok((events, cursor))) if !events.is_empty() => {
                     stream_cursor = cursor;
-                    let _ = out_tx.send(ServerMsg::Events { events, cursor }).await;
+                    if out_tx
+                        .send(Tick::Msg(ServerMsg::Events { events, cursor }))
+                        .await
+                        .is_err()
+                    {
+                        break; // socket loop gone — nothing left to feed
+                    }
                 }
-                Ok(_) => {}
-                Err(e) => eprintln!("stream error: {e}"),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    eprintln!("stream error: {e}");
+                    let _ = out_tx.send(Tick::Dead).await;
+                    break;
+                }
+                Err(_) => {
+                    // Elapsed — the pull hung, the worst kind of silent.
+                    eprintln!("stream timeout: pull did not complete in {TICKER_PULL_TIMEOUT:?}");
+                    let _ = out_tx.send(Tick::Dead).await;
+                    break;
+                }
             }
         }
     });
 
     loop {
         tokio::select! {
-            Some(msg) = out_rx.recv() => {
-                if !send_msg(&mut socket, &msg).await {
-                    break;
+            msg = out_rx.recv() => match msg {
+                Some(Tick::Msg(msg)) => {
+                    if !send_msg(&mut socket, &msg).await {
+                        break;
+                    }
                 }
-            }
+                // Dead: the stream failed server-side. None: the ticker
+                // is gone (its sender dropped) — same conclusion.
+                Some(Tick::Dead) | None => break,
+            },
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        // One poisoned message must not kill the stream:
-                        // errors are logged, the connection stays.
-                        match session.on_text(&db, &text).await {
-                            Ok(Some(reply)) => {
+                        // The handler is bound like every DB op: a hang
+                        // would wedge this select! loop (the ticker's
+                        // Dead could never be processed) and strand the
+                        // client waiting for an Ack that never comes.
+                        // Elapsed therefore ends the session like any
+                        // other DB failure.
+                        match timeout(SESSION_OP_TIMEOUT, session.on_text(&db, &text)).await {
+                            Ok(Ok(Some(reply))) => {
                                 // An Incompatible handshake closes the
                                 // session right after the frame lands —
                                 // the client reloads (#34).
@@ -116,8 +184,28 @@ async fn handle_socket<
                                     break;
                                 }
                             }
-                            Ok(None) => {}
-                            Err(e) => eprintln!("sync error: {e}"),
+                            Ok(Ok(None)) => {}
+                            Ok(Err(e)) => {
+                                // The same rule as the ticker's Dead:
+                                // a DB-level failure means the session
+                                // cannot do its job — a Push whose
+                                // apply failed would strand the client
+                                // waiting for an Ack that never comes.
+                                // Client-garbage (Json) stays: one
+                                // poisoned message must not kill the
+                                // stream, and at-least-once makes
+                                // skipping harmless.
+                                eprintln!("sync error: {e}");
+                                if matches!(e, SyncError::Sql(_)) {
+                                    break;
+                                }
+                            }
+                            Err(_) => {
+                                eprintln!(
+                                    "sync timeout: handler did not complete in {SESSION_OP_TIMEOUT:?}"
+                                );
+                                break;
+                            }
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,

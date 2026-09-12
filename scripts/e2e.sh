@@ -10,8 +10,13 @@ BUN="${BUN:-$HOME/.bun/bin/bun}"
 cd "$ROOT/e2e"
 
 blue "starting playwright (it manages postgres + server itself)…"
-# The dist build is owned by the webServer command (build step for the e2e
-# stack); a reused server always postdates its own dist build.
 # `bun run` uses the pinned local @playwright/test; `bun x playwright`
 # re-resolves and can pull a version-mismatched standalone package.
-"$BUN" run test "$@"
+#
+# Two passes: the main suite keeps full parallelism (3 workers); specs
+# tagged @isolated in their title need the shared infra EXCLUSIVELY
+# (they stop/restart the shared Postgres) and run last, single-worker.
+# User args apply to both passes; empty passes pass (a targeted run of
+# one spec must not fail because the other pass finds nothing).
+"$BUN" run test --pass-with-no-tests --grep-invert "@isolated" "$@"
+"$BUN" run test --pass-with-no-tests --grep "@isolated" --workers=1 "$@"
