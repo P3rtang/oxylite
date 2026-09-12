@@ -5,9 +5,17 @@
 
 use crate::from_row::RowError;
 use crate::pglite::BridgeError;
+use crate::protocol::SchemaVersionError;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
 pub enum EngineError {
+    /// The app's `SCHEMA_VERSION` const is not MAJOR.MINOR.PATCH — a
+    /// setup bug surfaced at `init` instead of a hidden panic the
+    /// embedding app cannot avoid or parse. The offending input rides
+    /// along (TimestampError pattern); serializable, so the relay keeps
+    /// working.
+    #[error("invalid schema version: {0}")]
+    BadVersion(#[from] SchemaVersionError),
     /// The local DB could not be opened or migrated (storage, wasm heap).
     #[error("db init failed: {0}")]
     DbInit(BridgeError),

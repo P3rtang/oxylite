@@ -15,7 +15,14 @@ use shared::Table;
 
 fn main() {
     console_error_panic_hook::set_once();
-    engine::init::<Table>(shared::MIGRATIONS, shared::SCHEMA_VERSION);
+    // A malformed SCHEMA_VERSION is a build-time setup bug: init surfaces
+    // it as EngineError::BadVersion. Without init there is no engine —
+    // launching would only hit the documented missing-singleton panic —
+    // so the console error IS the message and the app stays down.
+    if let Err(e) = engine::init::<Table>(shared::MIGRATIONS, shared::SCHEMA_VERSION) {
+        engine::log("boot", &format!("engine init failed: {e}"));
+        return;
+    }
     engine::<Table>().register_sink(Table::Notes, notes_sink());
     dioxus::launch(App);
 }

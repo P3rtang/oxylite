@@ -122,12 +122,21 @@ pub struct Engine<T: SyncTableWire> {
 /// channel: from here on every tab participates in the leader election.
 /// `T` is the app's table enum — the ONE instantiation of this library
 /// in the app. `version` is the app's schema version (`SCHEMA_VERSION`
-/// in shared) — a malformed const is a setup bug and panics, like the
-/// missing-singleton case.
-pub fn init<T: SyncTableWire>(migrations: &'static [(&'static str, &'static str)], version: &str) {
+/// in shared): a malformed const fails with [`EngineError::BadVersion`]
+/// — the app's own setup bug, surfaced where the app can parse it
+/// instead of a hidden panic. On `Err` nothing is registered: the
+/// singleton exists only after `Ok`.
+pub fn init<T: SyncTableWire>(
+    migrations: &'static [(&'static str, &'static str)],
+    version: &str,
+) -> Result<(), EngineError> {
+    // Parse BEFORE any registration: a failure must not half-initialize
+    // the engine (callers bailing on Err then meet the documented
+    // `engine()` panic only if they call it anyway).
+    let version = SchemaVersion::parse(version)?;
     let singleton: Rc<Engine<T>> = Rc::new(Engine {
         migrations,
-        version: SchemaVersion::parse(version).expect("SCHEMA_VERSION must be MAJOR.MINOR.PATCH"),
+        version,
         sock: RefCell::new(None),
         inbox: RefCell::new(Vec::new()),
         cursor: Cell::new(-1),
@@ -160,6 +169,7 @@ pub fn init<T: SyncTableWire>(migrations: &'static [(&'static str, &'static str)
     }
 
     ENGINE.with_borrow_mut(|slot| *slot = Some(singleton as Rc<dyn Any>));
+    Ok(())
 }
 
 /// App-provided sink for one table's ops: applies that table's events (or
