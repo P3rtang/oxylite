@@ -8,7 +8,7 @@ use sqlx::postgres::PgPool;
 // to.
 pub use oxylite::server::{OPS_CHANNEL, spawn_wake_adapter};
 pub use oxylite::server::{SyncError, pull_since};
-pub use oxylite::ws::sync_router;
+pub use oxylite::ws::{DEFAULT_FALLBACK_TICK, sync_router};
 
 /// One migrator over the UNION list (the lib's protocol tables + this
 /// app's tables — `shared::MIGRATIONS` is the merged list shared's

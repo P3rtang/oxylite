@@ -1,11 +1,11 @@
 //! The WS transport, axum flavor (feature `axum`, implies `server`).
 //! One drop-in route for any axum backend of the protocol: the socket
-//! loop, the change-stream ticker and the framing live here; the
-//! per-connection decisions are the transport-free [`Session`]
-//! (`server` feature), and the per-table SQL is the app's plug-ins.
-//! Framework mounts are separate features by design (reviewer decision,
-//! #28 r2) — a future actix backend would add its own module over the
-//! same core, no core changes.
+//! loop, the change-stream driver (notify-woken, tick fallback) and the
+//! framing live here; the per-connection decisions are the
+//! transport-free [`Session`] (`server` feature), and the per-table SQL
+//! is the app's plug-ins. Framework mounts are separate features by
+//! design (reviewer decision, #28 r2) — a future actix backend would
+//! add its own module over the same core, no core changes.
 
 use axum::{
     Router,
@@ -19,14 +19,22 @@ use tokio::time::timeout;
 
 use crate::contract::table::SyncTableWire;
 use crate::protocol::{SchemaVersion, ServerMsg};
-use crate::server::{OpApply, Session, SnapshotSource, SyncError, current_cursor, pull_since};
+use crate::pubsub::Bus;
+use crate::server::{
+    OPS_CHANNEL, OpApply, Session, SnapshotSource, SyncError, current_cursor, pull_since,
+    spawn_wake_adapter,
+};
 
-/// Ticker cadence: stream any server changes to connected sockets. The
-/// mechanism is a DB poll today — ROADMAP 2.2 (Postgres pub/sub)
-/// replaces the mechanism. The loop shape's invariant: a session that
-/// cannot READ the log ends itself (stream failures are surfaced as a
-/// disconnect, never streamed past silently — 2026-09-12).
-const STREAM_TICK: Duration = Duration::from_millis(500);
+/// Fallback cadence for the stream driver. The notify path is the
+/// MECHANISM (0011 trigger → adapter → bus → wake); this interval is
+/// the missed-notify safety net — a silently dead connection looks like
+/// an idle LISTEN (recv never errors), and only a pull can notice.
+/// Configurable per router (reviewer ruling: lib knob, default 5s, the
+/// app pulls its deployment value from env first). The loop's
+/// invariant is unchanged (2026-09-12): a session that cannot READ the
+/// log ends itself — stream failures surface as a disconnect, never
+/// streamed past silently.
+pub const DEFAULT_FALLBACK_TICK: Duration = Duration::from_secs(5);
 
 /// Bound on ONE ticker pull: a vanished DB (stopped container, dropped
 /// forward) does not always RST established connections — the query can
@@ -44,24 +52,43 @@ const TICKER_PULL_TIMEOUT: Duration = Duration::from_secs(2);
 const SESSION_OP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The WS route any axum backend mounts, e.g.
-/// `Router::new().merge(sync_router(db, Apply, Snapshots))`. The
-/// plug-ins are the app's [`OpApply`] + [`SnapshotSource`] impls (ZSTs —
-/// cloned per connection; `Send + Sync` because `&self` crosses awaits
-/// in the session and the on-upgrade future must be Send).
-pub fn sync_router<T, A, S>(db: PgPool, applier: A, source: S, version: SchemaVersion) -> Router
+/// `Router::new().merge(sync_router(db, Apply, Snapshots, fallback))`.
+/// The plug-ins are the app's [`OpApply`] + [`SnapshotSource`] impls
+/// (ZSTs — cloned per connection; `Send + Sync` because `&self` crosses
+/// awaits in the session and the on-upgrade future must be Send).
+/// `fallback_tick` is the stream driver's safety-net cadence
+/// ([`DEFAULT_FALLBACK_TICK`] if the app has no opinion).
+///
+/// ONE bus + ONE adapter live per router/db: Postgres is the source
+/// publisher, the adapter is its only LISTEN (2.2), and every accepted
+/// socket subscribes — a sub per connection, gone when the connection
+/// is (the reviewer's model: "clients just have a special attached sub
+/// which will invoke the correct websocket with the information. The
+/// sub get's removed when the websockets disconnects").
+pub fn sync_router<T, A, S>(
+    db: PgPool,
+    applier: A,
+    source: S,
+    version: SchemaVersion,
+    fallback_tick: Duration,
+) -> Router
 where
     T: SyncTableWire,
     A: OpApply<T> + Clone + Send + Sync + 'static,
     S: SnapshotSource<T> + Clone + Send + Sync + 'static,
 {
+    let bus = Bus::new();
+    spawn_wake_adapter(db.clone(), bus.clone());
     let route = move |ws: WebSocketUpgrade| async move {
         ws.on_upgrade(move |socket| {
             handle_socket::<T, A, S>(
                 socket,
                 db.clone(),
+                bus.clone(),
                 applier.clone(),
                 source.clone(),
                 version.clone(),
+                fallback_tick,
             )
         })
     };
@@ -87,9 +114,11 @@ async fn handle_socket<
 >(
     mut socket: WebSocket,
     db: PgPool,
+    bus: Bus<i64>,
     applier: A,
     source: S,
     version: SchemaVersion,
+    fallback_tick: Duration,
 ) {
     // Per-connection protocol state + the app's table plug-ins; the
     // decisions live in the transport-free `Session`.
@@ -98,27 +127,53 @@ async fn handle_socket<
     // server cursor so we only push changes that happen *during* this
     // connection. Older events arrive via explicit Pull. Bound like
     // every other DB op: on a vanished DB this returns 0 and the
-    // ticker's own timeout ends the session momentarily.
+    // driver's own timeout ends the session momentarily.
     let mut stream_cursor = timeout(TICKER_PULL_TIMEOUT, current_cursor(&db))
         .await
         .unwrap_or(0);
 
     let (out_tx, mut out_rx) = mpsc::channel::<Tick<T>>(64);
 
-    // Ticker: stream any server changes to this connection.
-    let ticker_db = db.clone();
-    let ticker = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(STREAM_TICK);
+    // The connection's sub: born here, moved into the driver, dropped
+    // when the driver dies (socket loop aborts it on any exit) — the
+    // bus forgets it, so a dead socket never receives again.
+    let mut sub = bus.subscribe(OPS_CHANNEL);
+    let driver_db = db.clone();
+
+    // Stream driver: pushes server changes to THIS connection, woken by
+    // the bus (trigger → adapter → wake) or the fallback tick. The pull
+    // body and the Dead semantics are the old ticker's, unchanged
+    // (2026-09-12): a stream that cannot READ the log ends the session.
+    let driver = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(fallback_tick);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            interval.tick().await;
+            // Pull trigger — the tick ALWAYS (safety net); a wake only
+            // when it can move the cursor: the ARM SENTINEL (0) always
+            // pulls (readiness + the reconnect re-pull nudge), real
+            // seqs skip when already streamed past (skip-when-current
+            // collapses coalesced bursts into one pull). The contract
+            // lives on `spawn_wake_adapter`.
+            let pull = tokio::select! {
+                _ = interval.tick() => true,
+                woken = sub.recv() => match woken {
+                    Some(seq) => seq == 0 || seq > stream_cursor,
+                    // The bus is gone — nothing will ever feed this
+                    // driver again; exiting drops `out_tx`, which the
+                    // socket loop reads as the end (its `None` arm).
+                    None => break,
+                },
+            };
+            if !pull {
+                continue;
+            }
             // The pull is bound: an error OR a hang (black-holed DB) is
             // a stream failure — printed for the operator (structured
             // logging is 3.2) and surfaced as Dead, ending the session
             // so the client reconnects into a truth it can see.
             match timeout(
                 TICKER_PULL_TIMEOUT,
-                pull_since::<T>(&ticker_db, stream_cursor),
+                pull_since::<T>(&driver_db, stream_cursor),
             )
             .await
             {
@@ -156,15 +211,16 @@ async fn handle_socket<
                         break;
                     }
                 }
-                // Dead: the stream failed server-side. None: the ticker
-                // is gone (its sender dropped) — same conclusion.
+                // Dead: the stream failed server-side. None: the driver
+                // is gone (its sender dropped — bus lost or stream
+                // failure) — same conclusion.
                 Some(Tick::Dead) | None => break,
             },
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         // The handler is bound like every DB op: a hang
-                        // would wedge this select! loop (the ticker's
+                        // would wedge this select! loop (the driver's
                         // Dead could never be processed) and strand the
                         // client waiting for an Ack that never comes.
                         // Elapsed therefore ends the session like any
@@ -186,8 +242,8 @@ async fn handle_socket<
                             }
                             Ok(Ok(None)) => {}
                             Ok(Err(e)) => {
-                                // The same rule as the ticker's Dead:
-                                // a DB-level failure means the session
+                                // The same rule as the driver's Dead: a
+                                // DB-level failure means the session
                                 // cannot do its job — a Push whose
                                 // apply failed would strand the client
                                 // waiting for an Ack that never comes.
@@ -215,7 +271,7 @@ async fn handle_socket<
         }
     }
 
-    ticker.abort();
+    driver.abort();
 }
 
 /// Serialize and deliver one server message; false means the socket died.

@@ -21,6 +21,15 @@ async fn main() {
     // over the merged list (see sync::migrator for why).
     sync::migrator().run(&db).await.expect("apply migrations");
 
+    // The stream driver's fallback cadence: a lib knob, deployed here
+    // from env first (reviewer ruling — "pull it from env vars first",
+    // default 5s). Milliseconds so ops can tune sub-second in tests.
+    let fallback_tick = std::env::var("SYNC_FALLBACK_TICK_MS")
+        .ok()
+        .and_then(|ms| ms.parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(sync::DEFAULT_FALLBACK_TICK);
+
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         // The vendored PGlite bundle (ES module + wasm + data), served with
@@ -49,6 +58,7 @@ async fn main() {
             sync::SyncRowSnapshots,
             oxylite::protocol::SchemaVersion::parse(shared::SCHEMA_VERSION)
                 .expect("SCHEMA_VERSION must be MAJOR.MINOR.PATCH"),
+            fallback_tick,
         ))
         .layer(tower_http::cors::CorsLayer::permissive());
 
