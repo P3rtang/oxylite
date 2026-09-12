@@ -27,11 +27,13 @@
 //! [`error`] the error type; [`relay`] the cross-tab layer (election
 //! roles, BroadcastChannel protocol, serving and proxying); [`sync`]
 //! the connection lifecycle (run/session/handle_msg, the durable op
-//! log, the socket itself).
+//! log, the socket itself); [`tabs`] the browser transport the relay
+//! rides (Web Locks election, BroadcastChannel).
 
 mod error;
 mod relay;
 mod sync;
+mod tabs;
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -48,7 +50,6 @@ use crate::pglite::{self, Pglite};
 use crate::protocol::{Op, SchemaVersion, ServerMsg};
 use crate::query::{Query, Subscription, SubscriptionGuard, SubscriptionId};
 use crate::table::SyncTableWire;
-use crate::tabs;
 
 use relay::{Role, TabMsg};
 

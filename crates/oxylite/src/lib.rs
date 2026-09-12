@@ -41,8 +41,6 @@ pub mod engine;
 pub mod pglite;
 #[cfg(feature = "client")]
 pub mod query;
-#[cfg(feature = "client")]
-mod tabs;
 
 #[cfg(feature = "server")]
 pub mod server;

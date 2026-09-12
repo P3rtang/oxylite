@@ -15,8 +15,9 @@ use crate::SCHEMA;
 use crate::pglite::{self, Pglite};
 use crate::protocol::{ClientMsg, Op, ServerMsg};
 use crate::table::SyncTableWire;
-use crate::tabs;
 use crate::timestamp::Timestamp;
+
+use super::tabs;
 
 impl<T: SyncTableWire> Engine<T> {
     /// The single long-lived task: claim the browser's engine slot, then

@@ -83,7 +83,7 @@ async fn acquire(if_available: bool) -> Option<LockHold> {
         Ok(lock) if !lock.is_null() => Some(LockHold { _private: () }),
         Ok(_) => None,
         Err(e) => {
-            crate::engine::log(
+            super::log(
                 "tabs",
                 &format!("lock signal rejected ({e:?}) — self-leading"),
             );
