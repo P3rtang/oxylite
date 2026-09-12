@@ -11,7 +11,14 @@ async fn main() {
         .unwrap_or_else(|_| "postgres://sync:sync@localhost:5432/offline_notes".into());
 
     let db = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
+        // Sized for the notify world (2.2): every commit wakes EVERY
+        // connected session's stream driver into a pull, on top of the
+        // sessions' own Push/Pull/snapshot ops and the adapter's
+        // dedicated LISTEN connection. The full e2e suite at 3 workers
+        // runs 6 sessions — 5 connections queued them (observed as a
+        // 1.3s delivery spike under load); 12 covers 6 sessions +
+        // adapter + headroom.
+        .max_connections(12)
         .connect(&db_url)
         .await
         .expect("connect to postgres");
