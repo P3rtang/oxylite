@@ -12,9 +12,9 @@
 
 use enum_iterator::Sequence;
 use oxylite::contract::table::SyncTable;
-use oxylite::delete::{OpExt, OpKind, tombstone_allows};
 use oxylite::protocol::Op;
-use oxylite::timestamp::Timestamp;
+use oxylite::protocol::delete::{OpExt, OpKind, tombstone_allows};
+use oxylite::protocol::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;

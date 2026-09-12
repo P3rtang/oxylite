@@ -24,13 +24,11 @@
 //! separate features by design — a future actix backend would add its
 //! own module over the same core.
 
-// ---- the protocol core: wire DTOs, plug-in contracts, op semantics,
-// timestamp — pure except the client-gated read decode ----
+// ---- the protocol core: wire DTOs + op semantics + timestamp, pure
+// ---- (serde/uuid/chrono only)
 
 pub mod contract;
-pub mod delete;
 pub mod protocol;
-pub mod timestamp;
 
 #[cfg(feature = "client")]
 pub mod engine;
@@ -47,8 +45,8 @@ pub mod ws;
 
 pub use contract::sync_row::SyncRow;
 pub use contract::table::{SyncTable, SyncTableWire};
+pub use protocol::timestamp::{Timestamp, TimestampError};
 pub use protocol::{ClientMsg, Op, ServerMsg, TableData, Tombstone};
-pub use timestamp::{Timestamp, TimestampError};
 
 /// The Postgres schema (namespace) the lib owns on BOTH sides — the
 /// server's real Postgres and the client's PGlite (#32). Every protocol

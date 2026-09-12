@@ -10,7 +10,7 @@
 
 use crate::contract::table::SyncTable;
 use crate::protocol::Op;
-use crate::timestamp::Timestamp;
+use crate::protocol::timestamp::Timestamp;
 
 /// Whether an `Op` upserts row state or deletes its row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

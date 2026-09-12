@@ -8,7 +8,7 @@
 
 use crate::Table;
 use oxylite::contract::sync_row::SyncRow;
-use oxylite::timestamp::Timestamp;
+use oxylite::protocol::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -49,7 +49,7 @@ mod client {
 
     use super::Note;
     use oxylite::contract::from_row::{FromRow, Row, RowError};
-    use oxylite::timestamp::Timestamp;
+    use oxylite::protocol::timestamp::Timestamp;
 
     impl FromRow for Note {
         fn from_row(row: &Row) -> Result<Self, RowError> {
@@ -78,7 +78,7 @@ mod server {
     //! the validating).
 
     use super::Note;
-    use oxylite::timestamp::Timestamp;
+    use oxylite::protocol::timestamp::Timestamp;
 
     impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Note {
         fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {

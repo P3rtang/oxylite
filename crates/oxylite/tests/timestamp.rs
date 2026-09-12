@@ -5,7 +5,7 @@
 //! a typed error carrying the offending string. The serde path validates
 //! too — it IS the wire boundary.
 
-use oxylite::timestamp::{Timestamp, TimestampError};
+use oxylite::protocol::timestamp::{Timestamp, TimestampError};
 use uuid::Uuid;
 
 // Fixture table (#31): the suite instantiates the protocol standalone.

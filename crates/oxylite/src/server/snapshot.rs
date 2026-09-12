@@ -12,7 +12,7 @@ use std::future::Future;
 use super::ops::current_cursor;
 use crate::contract::table::SyncTable;
 use crate::protocol::Tombstone;
-use crate::timestamp::Timestamp;
+use crate::protocol::timestamp::Timestamp;
 
 /// Replay is fine for small backlogs, but a client that is more than this
 /// many events behind gets a snapshot instead (fresh IndexedDB, or a long

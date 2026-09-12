@@ -12,9 +12,9 @@ use std::future::Future;
 use super::SyncError;
 use crate::contract::sync_row::SyncRow;
 use crate::contract::table::SyncTable;
-use crate::delete::{OpExt, OpKind};
 use crate::protocol::Op;
-use crate::timestamp::Timestamp;
+use crate::protocol::delete::{OpExt, OpKind};
+use crate::protocol::timestamp::Timestamp;
 
 /// The server's cursor: the newest seq in the sync log.
 pub async fn current_cursor(db: &PgPool) -> i64 {

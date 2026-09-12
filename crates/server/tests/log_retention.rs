@@ -15,7 +15,7 @@ fn upsert_op(id: Uuid, title: &str, at: &str) -> oxylite::protocol::Op<Table> {
         data: serde_json::json!({
             "id": id, "title": title, "body": "", "updated_at": at,
         }),
-        updated_at: oxylite::timestamp::Timestamp::parse(at).unwrap(),
+        updated_at: oxylite::protocol::timestamp::Timestamp::parse(at).unwrap(),
     }
 }
 

@@ -7,11 +7,11 @@
 use crate::SCHEMA;
 use crate::contract::sync_row::SyncRow;
 use crate::contract::table::SyncTable;
-use crate::delete::{OpExt, OpKind};
 use crate::engine::EngineError;
 use crate::pglite::Pglite;
+use crate::protocol::delete::{OpExt, OpKind};
+use crate::protocol::timestamp::Timestamp;
 use crate::protocol::{Op, Tombstone};
-use crate::timestamp::Timestamp;
 use uuid::Uuid;
 
 /// The final state of one pk after a batch: its newest op, as row data

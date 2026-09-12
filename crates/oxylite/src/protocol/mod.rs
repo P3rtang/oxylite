@@ -6,8 +6,11 @@
 //! wire bytes are IDENTICAL to the pre-generic protocol —
 //! `spec/sync-protocol.md` describes the same bytes.
 
+pub mod delete;
+pub mod timestamp;
+
 use crate::contract::table::SyncTable;
-use crate::timestamp::Timestamp;
+use crate::protocol::timestamp::Timestamp;
 use serde::de::Deserializer;
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};

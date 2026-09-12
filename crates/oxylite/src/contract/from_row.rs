@@ -35,7 +35,7 @@ pub enum RowError {
     /// malformed value rides the error, and LWW text comparisons never
     /// see it.
     #[error("column {0:?}: {1}")]
-    BadTimestamp(String, crate::timestamp::TimestampError),
+    BadTimestamp(String, crate::protocol::timestamp::TimestampError),
 }
 
 use std::fmt;
