@@ -19,6 +19,11 @@
 //! [`server::SnapshotSource`], where the checked SQL lives) and derives
 //! `Sequence` on its table enum so the lib can iterate every variant.
 //!
+//! Pub/sub (feature `pubsub`, implied by `server`): the in-process wake
+//! bus ([`pubsub::Bus`]) backends fan server-side events out over —
+//! transport-free and sqlx-free, so it stands apart from the sync
+//! machinery entirely (ROADMAP 2.2).
+//!
 //! Transport (feature `axum`, implies `server`): one drop-in WS route
 //! for axum backends ([`ws::sync_router`]). Framework mounts are
 //! separate features by design — a future actix backend would add its
@@ -32,6 +37,9 @@ pub mod protocol;
 
 #[cfg(feature = "client")]
 pub mod client;
+
+#[cfg(feature = "pubsub")]
+pub mod pubsub;
 
 #[cfg(feature = "server")]
 pub mod server;

@@ -52,6 +52,12 @@ lint() {
 
     blue "cargo test --workspace…"
     cargo test --workspace
+
+    # The bus suite is feature-gated (required-features) — the workspace
+    # run skips it under default features, so run it explicitly (the
+    # --test filter avoids re-running oxylite's ungated suites).
+    blue "cargo test -p oxylite --features pubsub (bus suite)…"
+    cargo test -p oxylite --features pubsub --test pubsub_bus
     green "lint: clean"
 }
 

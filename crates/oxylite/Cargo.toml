@@ -15,15 +15,21 @@ client = [
     "dep:wasm-bindgen-futures",
     "dep:web-sys",
 ]
+# The in-process pub/sub bus (2.2): transport-free, sqlx-free — its own
+# feature so a backend can take the bus without the sqlx half (reviewer:
+# "it does stand on its own"). Tokio's mpsc is the only machinery.
+pubsub = ["dep:tokio"]
 # Server-side protocol machinery (Postgres via sqlx). Off by default so
-# the wasm client build never pulls sqlx; the backend enables it.
-server = ["dep:sqlx"]
+# the wasm client build never pulls sqlx; the backend enables it. The
+# wake bus rides along — the listener adapter + sessions are its first
+# consumers.
+server = ["dep:sqlx", "pubsub"]
 # The WS transport, axum flavor: one drop-in route for any axum
 # backend. Framework mounts are separate features by design — a future
 # actix backend would add its own module over the same `server` core
 # (reviewer decision, #28 r2), so the core never grows a dependency on
 # one web framework.
-axum = ["server", "dep:axum", "dep:tokio"]
+axum = ["server", "dep:axum"]
 
 [dependencies]
 dioxus = { version = "0.7", features = ["web"], optional = true }
@@ -67,4 +73,11 @@ sqlx = { version = "0.8", optional = true, features = [
     "json",
     "chrono",
 ] }
+
+# The bus suite needs tokio's runtime — feature-gated via
+# required-features so default builds skip the target entirely (absent,
+# not vacuously passing).
+[[test]]
+name = "pubsub_bus"
+required-features = ["pubsub"]
 
