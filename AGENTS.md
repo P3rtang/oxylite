@@ -94,6 +94,12 @@ go through the `start_background_job` tool (custom opencode plugin,
   an opencode restart (plugin edits require one!) still wakes the
   session it was queued from — including "finished while opencode was
   down" reports. PID reuse is detected via /proc starttime.
+- **Visible while running**: the TUI shows a "Jobs" section at the
+  bottom of the sidebar (`• <job> — <elapsed>`, live) while any
+  background job runs, plus a `/jobs` dialog (works even with the
+  sidebar hidden) (`.opencode/plugins/long_commands.tui.tsx`,
+  registered via `.opencode/tui.json`; also needs the opencode
+  restart).
 - Queue the job and **end your turn** — a message with the exit code
   and log tail arrives when it finishes; full log at
   `/tmp/opencode/<slug>-<id>.log`. Never sleep-poll.
