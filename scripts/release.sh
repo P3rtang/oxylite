@@ -22,15 +22,15 @@ source "$(dirname "$0")/common.sh"
     red "tracked changes in the tree — commit or stash first"; exit 1;
 }
 
-# ---- mode: a flag, or the 1/2/3 prompt
+# ---- mode: a flag, or the 1/2/3(+4) prompt
 MODE=""
 for arg in "$@"; do
     case "$arg" in
-        --patch|--minor|--major)
+        --patch|--minor|--major|--retry)
             [ -z "$MODE" ] || { red "one release flag at a time"; exit 1; }
             MODE="${arg#--}" ;;
         *)
-            red "usage: scripts/release.sh [--patch|--minor|--major]"
+            red "usage: scripts/release.sh [--patch|--minor|--major|--retry]"
             exit 1 ;;
     esac
 done
@@ -41,9 +41,12 @@ git fetch --tags --quiet origin
 CURRENT="$(git ls-remote --tags origin 'refs/tags/oxylite-v*' \
     | sed -e 's|.*refs/tags/oxylite-v||' -e 's|\^{}$||' -e '/^$/d' \
     | sort -V | tail -1 || true)"
+HAS_TAG=""
 if [ -z "$CURRENT" ]; then
     CURRENT="0.0.0"
     blue "no oxylite-v* tags on the remote yet — suggesting from 0.0.0"
+else
+    HAS_TAG=1
 fi
 [[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
     red "unparsable current tag: $CURRENT"; exit 1;
@@ -71,22 +74,31 @@ echo "current release: $CURRENT (latest oxylite-v* on the remote)"
 echo "  1) patch  → $PATCH_V"
 echo "  2) minor  → $MINOR_V"
 echo "  3) major  → $MAJOR_V"
+[ -n "$HAS_TAG" ] && echo "  4) retry  → $CURRENT (same tag, re-tagged at this commit)"
 
 V=""
-if [ -n "$MODE" ]; then
-    case "$MODE" in
-        patch) V="$PATCH_V" ;;
-        minor) V="$MINOR_V" ;;
-        major) V="$MAJOR_V" ;;
-    esac
-else
-    read -r -p "release type [1/2/3] (default 1): " CHOICE || CHOICE=""
-    case "${CHOICE:-1}" in
+RETRY=""
+resolve() { # the choice → version (+retry marker); retry only with a tag
+    case "$1" in
         1) V="$PATCH_V" ;;
         2) V="$MINOR_V" ;;
         3) V="$MAJOR_V" ;;
-        *) red "pick 1, 2 or 3"; exit 1 ;;
+        4)
+            [ -n "$HAS_TAG" ] || { red "nothing to retry — no tag on the remote"; exit 1; }
+            V="$CURRENT"; RETRY=1 ;;
+        *) red "pick 1, 2, 3 or 4"; exit 1 ;;
     esac
+}
+if [ -n "$MODE" ]; then
+    case "$MODE" in
+        patch) resolve 1 ;;
+        minor) resolve 2 ;;
+        major) resolve 3 ;;
+        retry) resolve 4 ;;
+    esac
+else
+    read -r -p "release type [1/2/3] (default 1): " CHOICE || CHOICE=""
+    resolve "${CHOICE:-1}"
 fi
 green "cutting oxylite v$V"
 
@@ -113,7 +125,24 @@ git push origin master
 blue "verifying the package locally (dry-run publish — no token, no tag spent)…"
 cargo publish -p oxylite --dry-run
 
-blue "tagging oxylite-v$V (the tag is what starts CI)…"
-git tag -a "oxylite-v$V" -m "oxylite v$V"
-git push origin "oxylite-v$V"
-green "released oxylite-v$V — the gate runs on the tag ref, then crates.io. Watch the Actions run."
+TAG="oxylite-v$V"
+if [ -n "$RETRY" ]; then
+    # The retry re-points the tag at THIS commit — the whole point is
+    # the fix that landed since the failed run. Re-running the same
+    # commit is legitimate too (infra failures, a missing token):
+    # warn, don't block.
+    if [ "$(git rev-parse HEAD)" = "$(git rev-parse "$TAG^{commit}" 2>/dev/null || echo none)" ]; then
+        blue "HEAD is already the tagged commit — retrying the same code"
+    else
+        blue "re-pointing $TAG at this commit…"
+    fi
+    git tag -d "$TAG" 2>/dev/null || true
+    if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
+        git push origin ":refs/tags/$TAG"
+    fi
+fi
+
+blue "tagging $TAG (the tag is what starts CI)…"
+git tag -a "$TAG" -m "oxylite v$V"
+git push origin "$TAG"
+green "released $TAG — the gate runs on the tag ref, then crates.io. Watch the Actions run."
