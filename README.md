@@ -157,7 +157,8 @@ semantics, generated-SQL shapes, the pub/sub bus, pubsub live tests,
 retention, schema handshakes, and a suite that PREPARE-checks every
 generated client statement against the migrated schema. CI (GitHub
 Actions) runs the whole gate on every PR and publishes the library on
-`oxylite-v*` tags.
+`oxylite-v*` tags — cut a release with `scripts/release.sh` (suggests
+patch/minor/major, verifies the package locally, then tags).
 
 ## Notes
 
