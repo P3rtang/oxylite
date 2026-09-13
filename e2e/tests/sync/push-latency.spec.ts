@@ -45,6 +45,16 @@ const OUTLIER_CEILING_MS = 1500;
 const SANITY_BUDGET_MS = 5_000;
 const CLOCK_SLACK_MS = 10;
 
+// The DOM twin of the commit→receipt contract: click→VISIBLE. The
+// client machinery between receipt and render is #38's target — the
+// 150ms inbox polls and the per-write Pglite::init (~100–150ms) put
+// this at 750–860ms observed, red on today's code (that is the chase).
+// Committed test.fixme per the #33 pattern; flipped live when the
+// event-driven drain + bridge caching land, budget re-tuned on
+// post-fix data (starting proposal 600ms × 3).
+const RENDER_BUDGET_MS = 600;
+const RENDER_WRITES = 3;
+
 function psql(sql: string) {
   return execSync(
     `podman compose exec -T postgres psql -U sync -d offline_notes -t -A -c "${sql}"`,
@@ -54,6 +64,12 @@ function psql(sql: string) {
 
 async function waitConnected(page: Page) {
   await expect(page.getByText("connected")).toBeVisible({ timeout: 30_000 });
+}
+
+async function addNote(page: Page, title: string) {
+  await page.getByPlaceholder("Note title…").fill(title);
+  await page.getByRole("button", { name: "Add" }).click();
+  await expect(page.getByRole("listitem").filter({ hasText: title })).toBeVisible();
 }
 
 test("a committed push is delivered to a connected client within the notify budget", async ({
@@ -104,9 +120,19 @@ test("a committed push is delivered to a connected client within the notify budg
       const [title, seq, committedMs] = line.split("|");
       return { title, seq: Number(seq), committedMs: Number(committedMs) };
     });
-  expect(rows).toHaveLength(WRITES);
+  expect(rows).not.toHaveLength(0);
+  // At-least-once may legitimately record the SAME op twice (the
+  // lost-ack contract pins exactly that — observed once, 77ms apart,
+  // no reconnect). So: count DISTINCT stamps, and match each stamp's
+  // delta on its FIRST seq (rows are seq-ordered; the duplicate's seq
+  // only makes delivery earlier or equal).
+  const first = new Map<string, { seq: number; committedMs: number }>();
+  for (const { title, seq, committedMs } of rows) {
+    if (!first.has(title)) first.set(title, { seq, committedMs });
+  }
+  expect([...first.keys()]).toHaveLength(WRITES);
 
-  const deltas = rows.map(({ title, seq, committedMs }) => {
+  const deltas = [...first.entries()].map(([title, { seq, committedMs }]) => {
     const delivery = receipts.find(
       (r) => r.cursor >= seq && r.ts >= committedMs - CLOCK_SLACK_MS,
     );
@@ -131,3 +157,48 @@ test("a committed push is delivered to a connected client within the notify budg
   await ctxA.close();
   await ctxB.close();
 });
+
+test.fixme(
+  "a push renders on a connected client within the drain-free budget — three for three",
+  async ({ browser }) => {
+    // The DOM twin of the commit→receipt contract: click→VISIBLE, the
+    // number a user feels. Red on today's code by measurement (750–860ms
+    // observed): the 150ms inbox polls + the per-write Pglite::init are
+    // #38's targets. Committed fixme so the gate stays green until the
+    // fix lands; flip live with 1a+1b and re-tune the budget on data.
+    const canary = `e2e render canary ${Date.now()}`;
+    const stamps = Array.from(
+      { length: RENDER_WRITES },
+      (_, i) => `e2e render ${Date.now()} #${i}`,
+    );
+
+    // A: the writer, connected.
+    const ctxA = await browser.newContext();
+    const pageA = await ctxA.newPage();
+    await pageA.goto("/");
+    await waitConnected(pageA);
+    await addNote(pageA, canary);
+
+    // B: idle-current before any timed write.
+    const ctxB = await browser.newContext();
+    const pageB = await ctxB.newPage();
+    await pageB.goto("/");
+    await waitConnected(pageB);
+    await expect(pageB.getByRole("listitem").filter({ hasText: canary })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    for (const stamp of stamps) {
+      await pageA.getByPlaceholder("Note title…").fill(stamp);
+      const t0 = Date.now();
+      await pageA.getByRole("button", { name: "Add" }).click();
+      await expect(pageB.getByRole("listitem").filter({ hasText: stamp })).toBeVisible({
+        timeout: RENDER_BUDGET_MS,
+      });
+      console.log(`[push-latency] ${stamp}: click→visible ${Date.now() - t0}ms`);
+    }
+
+    await ctxA.close();
+    await ctxB.close();
+  },
+);
