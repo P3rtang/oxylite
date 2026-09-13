@@ -7,12 +7,12 @@ snapshots, pub/sub-driven push, schema-evolution handshake — generic over
 your tables. The notes app in this repo is the proof vehicle that keeps
 it honest; a consuming app implements its row types and plugs in.
 
-| Piece | Tech |
-|---|---|
-| The library | `oxylite` (this repo, published to crates.io) |
-| Server side | sqlx (Postgres 16) + an optional axum transport |
-| Client side | wasm: PGlite bridge, sync engine, reactive queries |
-| Real-time | Postgres `LISTEN/NOTIFY` → in-process pub/sub bus → per-socket wake |
+| Piece       | Tech                                                                |
+| ----------- | ------------------------------------------------------------------- |
+| The library | `oxylite` (this repo, published to crates.io)                       |
+| Server side | sqlx (Postgres 16) + an optional axum transport                     |
+| Client side | wasm: PGlite bridge, sync engine, reactive queries                  |
+| Real-time   | Postgres `LISTEN/NOTIFY` → in-process pub/sub bus → per-socket wake |
 
 ## What it does
 
@@ -76,18 +76,43 @@ The reference hookup is the demo itself:
   the migrator over the merged migration list.
 - `crates/client` — the Dioxus consumer.
 
-Wire protocol (JSON over one websocket; the handshake opens every
-session):
+Wire protocol (JSON over one websocket; every session opens with the
+handshake):
 
-```json
-C->S  {"type":"Hello","version":"1.0.0"}
-S->C  {"type":"Ready","version":"1.0.0"}       // or Incompatible → reload
-C->S  {"type":"Pull","since":42}
-C->S  {"type":"Push","ops":[…],"batch":"<uuid>"}
-      // a delete is the same op with "data":null
-S->C  {"type":"Ack","cursor":57,"batch":"<uuid>"}
-S->C  {"type":"Events","events":[…],"cursor":57}
-S->C  {"type":"Snapshot","seq":57,"tables":[…],"tombstones":[…]}
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as client (wasm)
+    participant S as server (axum)
+
+    C->>S: Hello { version }
+    alt wire-compatible (major.minor)
+        S->>C: Ready { version }
+    else mismatch
+        S->>C: Incompatible { server, client }
+        Note over C: guarded reload, once
+    end
+
+    C->>S: Pull { since }
+    alt far behind or below the pruned floor — once per connection
+        S->>C: Snapshot { seq, tables, tombstones }
+    else replay
+        S->>C: Events { events, cursor }
+    end
+
+    Note over C: offline writes persist to PGlite (durable op log)
+    C->>S: Push { ops, batch }
+    S->>C: Ack { cursor, batch }
+    Note over C: retire the batch's pending rows, pull again
+
+    Note over S: sync_log INSERT → trigger → pg_notify(seq)
+    S->>S: adapter — LISTEN → pub/sub bus → per-socket wake
+    S-->>C: Events { events, cursor }
+    Note over S: the 5s fallback tick drives the same pull
+    C->>S: Pull { since: cursor }
+    Note over C: chained windows until an empty one
+
+    Note over C,S: socket dies → 3s backoff → a fresh session (Hello again)
 ```
 
 The client feature (wasm) needs the vendored PGlite bundle served
