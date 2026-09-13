@@ -48,6 +48,17 @@ fi
 [[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
     red "unparsable current tag: $CURRENT"; exit 1;
 }
+
+# The manifest may drift from the remote (hand-bumped, or a release cut
+# without the tag). The TAG is authoritative: feedback first, then the
+# bump applies on the realigned base — a first release (manifest ahead
+# of no tags) is the common drift case.
+MANIFEST_V="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/oxylite/Cargo.toml | head -1)"
+if [ "$MANIFEST_V" != "$CURRENT" ]; then
+    blue "manifest is at v$MANIFEST_V — the remote's latest release is v$CURRENT"
+    blue "the manifest realigns to the remote; the bump applies on top of it"
+fi
+
 MAJOR=${CURRENT%%.*}
 REST=${CURRENT#*.}
 MINOR=${REST%%.*}
@@ -80,14 +91,21 @@ fi
 green "cutting oxylite v$V"
 
 # ---- the dance
-blue "bumping crates/oxylite/Cargo.toml…"
+blue "setting crates/oxylite/Cargo.toml to v$V…"
 # Anchored: only the PACKAGE version line matches (dependency lines are
 # indented or the `dep = { version = … }` form — they never start a line).
 sed -i "s/^version = \".*\"/version = \"$V\"/" crates/oxylite/Cargo.toml
 cargo check -q -p oxylite 2>/dev/null   # syncs Cargo.lock with the manifest
 
-git add crates/oxylite/Cargo.toml Cargo.lock
-git commit -m "oxylite: release v$V"
+if git diff --quiet -- crates/oxylite/Cargo.toml; then
+    # The chosen version equals what the manifest already carries (the
+    # first-release drift case: remote at 0.0.0, manifest at 0.1.0,
+    # minor bump lands on 0.1.0). No commit — release the manifest as-is.
+    green "manifest already at v$V — no bump commit needed"
+else
+    git add crates/oxylite/Cargo.toml Cargo.lock
+    git commit -m "oxylite: release v$V"
+fi
 
 blue "pushing master…"
 git push origin master
