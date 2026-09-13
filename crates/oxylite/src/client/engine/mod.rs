@@ -49,7 +49,7 @@ use crate::client::pglite::{self, Pglite};
 use crate::client::query::{Query, Subscription, SubscriptionGuard, SubscriptionId};
 use crate::contract::from_row::FromRow;
 use crate::contract::table::SyncTableWire;
-use crate::protocol::{Op, SchemaVersion, ServerMsg};
+use crate::protocol::{Op, SchemaVersion};
 
 use relay::{Role, TabMsg};
 
@@ -93,9 +93,12 @@ pub struct Engine<T: SyncTableWire> {
     version: SchemaVersion,
     /// The socket while a session is open.
     sock: RefCell<Option<web_sys::WebSocket>>,
-    /// Server messages parsed by the onmessage callback, awaiting the
-    /// master task.
-    inbox: RefCell<Vec<ServerMsg<T>>>,
+    /// The leader's open bridge, cached from `run` (#38): push_local
+    /// used to re-init PGlite per write (~100–150ms of every click→
+    /// receipt). Set by whichever `run` opens the DB; `push_local`
+    /// falls back to init when absent (subordinates never reach it —
+    /// they relay — and a per-tab engine caches its own).
+    db: RefCell<Option<crate::client::pglite::Pglite>>,
     /// Where we've streamed sync_log to; persisted in the client's meta
     /// table so it survives reloads.
     cursor: Cell<i64>,
@@ -138,7 +141,7 @@ pub fn init<T: SyncTableWire>(
         migrations,
         version,
         sock: RefCell::new(None),
-        inbox: RefCell::new(Vec::new()),
+        db: RefCell::new(None),
         cursor: Cell::new(-1),
         sinks: RefCell::new(HashMap::new()),
         role: Cell::new(None),

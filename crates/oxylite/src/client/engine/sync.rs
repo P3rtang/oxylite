@@ -4,6 +4,8 @@
 //! and the durable op log (write-ahead push + connect flush). The socket
 //! helpers and the cursor persistence close it out.
 
+use futures::StreamExt;
+use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
@@ -18,6 +20,15 @@ use crate::protocol::timestamp::Timestamp;
 use crate::protocol::{ClientMsg, Op, ServerMsg};
 
 use super::tabs;
+
+/// The per-connection mailbox: parsed server messages, terminated by a
+/// Closed sentinel. Death rides the stream on purpose — the socket
+/// closures are `forget()`-ten (never dropped), so the channel could
+/// never close via sender drop (#38).
+enum SocketEvent<T: SyncTableWire> {
+    Message(ServerMsg<T>),
+    Closed,
+}
 
 impl<T: SyncTableWire> Engine<T> {
     /// The single long-lived task: claim the browser's engine slot, then
@@ -81,6 +92,10 @@ impl<T: SyncTableWire> Engine<T> {
         };
         log("boot", "pglite ready — this tab is the engine's leader");
         self.cursor.set(load_cursor(&db).await);
+        // Cache for push_local (#38): every write used to re-init the
+        // bridge (~100–150ms of every click→receipt). The servicer task
+        // below starts after this line, so every TabMsg::Push finds it.
+        *self.db.borrow_mut() = Some(db.clone());
         self.set_status("offline — local data loaded");
         log("boot", &self.debug());
 
@@ -94,12 +109,15 @@ impl<T: SyncTableWire> Engine<T> {
 
         loop {
             self.set_status("connecting…");
-            match open_socket::<T>(&sync_url()) {
+            // One mailbox per connection: the socket closures feed it,
+            // the session awaits it (#38).
+            let (events_tx, events_rx) = mpsc::unbounded::<SocketEvent<T>>();
+            match open_socket::<T>(&sync_url(), events_tx) {
                 Ok(sock) => {
                     *self.sock.borrow_mut() = Some(sock.clone());
                     self.set_status("connected");
                     log("sync", "connected");
-                    self.session(&db, &sock).await;
+                    self.session(&db, &sock, events_rx).await;
                     *self.sock.borrow_mut() = None;
                     log("sync", "disconnected — retrying in 3s");
                     self.set_status("offline — will retry…");
@@ -114,9 +132,18 @@ impl<T: SyncTableWire> Engine<T> {
         }
     }
 
-    /// One connected session: flush the initial pull + pending pushes, then
-    /// drain the inbox until the socket closes (or the handshake times out).
-    async fn session(&self, db: &Pglite, sock: &WebSocket) {
+    /// One connected session: flush the initial pull + pending pushes,
+    /// then AWAIT the socket's mailbox until it signals Closed (#38 —
+    /// event-driven: no 150ms poll; the onmessage closure wakes the
+    /// awaiter directly, server pushes land in microseconds instead of
+    /// waiting out a drain tick). The handshake phase keeps its poll —
+    /// pre-open there is nothing to be woken for.
+    async fn session(
+        &self,
+        db: &Pglite,
+        sock: &WebSocket,
+        mut events: UnboundedReceiver<SocketEvent<T>>,
+    ) {
         let mut flushed = false;
         let mut connecting_ms = 0u32;
         loop {
@@ -144,11 +171,15 @@ impl<T: SyncTableWire> Engine<T> {
                         });
                         self.flush_pending(db).await;
                     }
-                    let messages = std::mem::take(&mut *self.inbox.borrow_mut());
-                    for msg in messages {
-                        self.handle_msg(db, msg).await;
+                    // Event-driven: the next frame — or the socket's
+                    // death — arrives via the mailbox. Nothing polls in
+                    // between.
+                    match events.next().await {
+                        Some(SocketEvent::Message(msg)) => self.handle_msg(db, msg).await,
+                        // Closed sentinel (or the impossible channel
+                        // close): reconnect in `run`.
+                        _ => return,
                     }
-                    timer_pause(150).await;
                 }
                 _ => return, // closed or closing: reconnect in `run`
             }
@@ -331,17 +362,25 @@ impl<T: SyncTableWire> Engine<T> {
     }
 
     pub(super) async fn push_local(&self, op: Op<T>) {
-        // The op log must be reachable for EVERY push now (write-ahead):
-        // its row is what makes the send survivable.
-        let db = match Pglite::init(self.migrations).await {
-            Ok(db) => db,
-            Err(e) => {
-                log("sync", &format!("op log unavailable: {e}"));
-                self.set_last_error(EngineError::Sink(format!(
-                    "write could not be persisted: {e}"
-                )));
-                return;
-            }
+        // The cached bridge from `run` (#38) — re-initializing PGlite
+        // per write cost ~100–150ms of every click→receipt. The init
+        // fallback only fires if no run has cached yet (defensive: the
+        // servicer starts after the leader's run opened the DB, and
+        // subordinates never get here — they relay). Clone BEFORE any
+        // await: the RefCell borrow must not cross one.
+        let cached = self.db.borrow().clone();
+        let db = match cached {
+            Some(db) => db,
+            None => match Pglite::init(self.migrations).await {
+                Ok(db) => db,
+                Err(e) => {
+                    log("sync", &format!("op log unavailable: {e}"));
+                    self.set_last_error(EngineError::Sink(format!(
+                        "write could not be persisted: {e}"
+                    )));
+                    return;
+                }
+            },
         };
         let json = match serde_json::to_string(&op) {
             Ok(json) => json,
@@ -458,15 +497,6 @@ impl<T: SyncTableWire> Engine<T> {
         }
     }
 
-    /// Entry point for the socket's onmessage callback. Runs outside any
-    /// dioxus scope, so it must never spawn: it parses and enqueues only.
-    pub(super) fn recv_text(&self, text: &str) {
-        match serde_json::from_str::<ServerMsg<T>>(text) {
-            Ok(msg) => self.inbox.borrow_mut().push(msg),
-            Err(e) => log("sync", &format!("bad message: {e}")),
-        }
-    }
-
     fn send(&self, msg: &ClientMsg<T>) {
         let _ = self.send_ok(msg);
     }
@@ -520,19 +550,51 @@ fn reload_once() -> bool {
 
 const RELOAD_FLAG: &str = "oxylite-reload-once";
 
-/// Open the sync websocket; parsed messages are enqueued via
-/// [`Engine::recv_text`] and everything else is driven by `run`.
-fn open_socket<T: SyncTableWire>(url: &str) -> Result<WebSocket, JsValue> {
+/// Open the sync websocket: parsed messages land on `events`, close and
+/// error send the [`SocketEvent::Closed`] sentinel; everything else is
+/// driven by `run`. The closures run outside any dioxus scope — parse
+/// and send only, never spawn (the send IS the wake, #38).
+fn open_socket<T: SyncTableWire>(
+    url: &str,
+    events: UnboundedSender<SocketEvent<T>>,
+) -> Result<WebSocket, JsValue> {
     let ws = WebSocket::new(url)?;
 
-    let onmessage =
+    let onmessage = {
+        let events = events.clone();
         wasm_bindgen::closure::Closure::wrap(Box::new(move |e: web_sys::MessageEvent| {
             if let Some(text) = e.data().as_string() {
-                engine::<T>().recv_text(&text);
+                match serde_json::from_str::<ServerMsg<T>>(&text) {
+                    Ok(msg) => {
+                        let _ = events.unbounded_send(SocketEvent::Message(msg));
+                    }
+                    Err(e) => log("sync", &format!("bad message: {e}")),
+                }
             }
-        }) as Box<dyn FnMut(web_sys::MessageEvent)>);
+        }) as Box<dyn FnMut(web_sys::MessageEvent)>)
+    };
     ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
     onmessage.forget();
+
+    // Close/error → the Closed sentinel: the session's await must end
+    // even when no message ever follows (the old 150ms poll noticed the
+    // state change between messages; the awaiter needs the push).
+    let on_close = {
+        let events = events.clone();
+        wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
+            let _ = events.unbounded_send(SocketEvent::Closed);
+        }) as Box<dyn FnMut(web_sys::Event)>)
+    };
+    ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+    on_close.forget();
+
+    let on_error = {
+        wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
+            let _ = events.unbounded_send(SocketEvent::Closed);
+        }) as Box<dyn FnMut(web_sys::Event)>)
+    };
+    ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+    on_error.forget();
 
     Ok(ws)
 }
