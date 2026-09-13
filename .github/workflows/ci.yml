@@ -1,0 +1,104 @@
+# CI (roadmap 3.1, #39): the gate on every PR/push, and — ONLY on an
+# `oxylite-v*` tag — the publish of the LIB to crates.io. The demo
+# (shared/server/client) never ships: GitHub stores the testing site,
+# crates.io gets the library.
+#
+# Shape notes:
+# - Postgres comes from the repo's compose.yaml (docker compose — CI
+#   exports COMPOSE="docker compose"; locally everything stays podman).
+# - The checked sqlx macros prepare at compile time, so `cargo test`
+#   needs the schema to EXIST before the build: the committed dump
+#   (db-default.sh restore) is the migration.
+# - `test.sh --lint` covers fmt + clippy (host + wasm) + build + all
+#   Rust suites; the bus suite is feature-gated and runs inside it.
+# - The publish job double-checks the tag against the crate version
+#   (consistency by construction — a drifted tag fails loudly, it does
+#   not ship whatever number it carries).
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["oxylite-v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  COMPOSE: docker compose
+  DATABASE_URL: postgres://sync:sync@localhost:5432/offline_notes
+  DX_VERSION: "0.7.10"
+  BUN_VERSION: "1.4.2"
+
+jobs:
+  rust-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: postgres up + default state (macros prepare against it)
+        run: |
+          docker compose up -d
+          ./scripts/db-default.sh restore
+      - run: ./test.sh --lint
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: bun deps
+        run: cd e2e && bun install --frozen-lockfile
+      - name: playwright chromium (+ system deps)
+        run: cd e2e && bunx playwright install --with-deps chromium
+      - name: dx (prebuilt release, cached by version)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/dx
+          key: dx-${{ env.DX_VERSION }}
+      - name: fetch dx if not cached
+        run: |
+          if [ ! -x "$HOME/.cargo/bin/dx" ]; then
+            curl -fsSL \
+              "https://github.com/DioxusLabs/dioxus/releases/download/v${DX_VERSION}/dioxus-cli-x86_64-unknown-linux-gnu.tar.gz" \
+              | tar xz -C "$HOME/.cargo/bin"
+            chmod +x "$HOME/.cargo/bin/dx"
+          fi
+      - name: gate + e2e (dist freshness is owned by the webServer step)
+        env:
+          WEB_SERVER_TIMEOUT: "600000"
+        run: ./test.sh --e2e
+
+  publish:
+    # Tag push only: `oxylite-v*` after the gate is green. The version
+    # lives in oxylite's Cargo.toml (bump by hand; crates.io forbids
+    # re-publishing a version).
+    if: startsWith(github.ref, 'refs/tags/oxylite-v')
+    needs: [rust-gate, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: the tag must match the crate version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/oxylite-v}"
+          CRATE="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "oxylite") | .version')"
+          echo "tag $TAG — crate $CRATE"
+          [ "$TAG" = "$CRATE" ] || {
+            echo "tag and crate version drift — bump the manifest, re-tag"
+            exit 1
+          }
+      - name: standalone verify build (default features, no services)
+        run: cargo publish -p oxylite --dry-run
+      - name: publish to crates.io
+        run: cargo publish -p oxylite --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
