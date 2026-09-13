@@ -3,6 +3,15 @@ license = "Apache-2.0"
 name = "oxylite"
 version = "0.1.0"
 edition = "2024"
+description = "offline-first sync for PGlite and real postgres: websocket protocol, LWW ops, tombstones, snapshots, pub/sub push, and a generic engine + server core"
+repository = "https://github.com/p3rtang/pglite-test"
+keywords = ["offline-first", "sync", "postgres", "pglite", "wasm"]
+# The vendored PGlite bundle (17MB) is demo-serving material — the server
+# ServeDir and the browser need it, no lib source references it, and
+# crates.io caps packages at 10MB compressed. Consumers vendor it from
+# npm (electric-sql/pglite) exactly as the demo did (pglite.rs's docs).
+# The boot snippet the lib DOES embed stays.
+exclude = ["assets/pglite"]
 
 [features]
 # The wasm client half: engine, PGlite bridge, reactive queries. Off in
