@@ -19,7 +19,7 @@ import { expect, test, type Page } from "@playwright/test";
 // encoding "UTF8": 0x00`.
 
 function psql(sql: string) {
-  execSync(`podman compose exec -T postgres psql -U sync -d offline_notes -c "${sql}"`, {
+  execSync(`${process.env.COMPOSE ?? "podman compose"} exec -T postgres psql -U sync -d offline_notes -c "${sql}"`, {
     cwd: "..", // playwright runs from e2e/; compose file lives at the repo root
   });
 }

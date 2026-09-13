@@ -8,7 +8,7 @@ import { expect, test, type Page } from "@playwright/test";
 // page that is demonstrably live and synced).
 
 function psql(sql: string) {
-  execSync(`podman compose exec -T postgres psql -U sync -d offline_notes -c "${sql}"`, {
+  execSync(`${process.env.COMPOSE ?? "podman compose"} exec -T postgres psql -U sync -d offline_notes -c "${sql}"`, {
     cwd: "..", // playwright runs from e2e/; compose file lives at the repo root
   });
 }
@@ -132,7 +132,7 @@ test("a lost ack resends the batch — the server applies it twice and converges
   const logCount = () => {
     try {
       const out = execSync(
-        `podman compose exec -T postgres psql -U sync -d offline_notes -t -A -c ` +
+        `${process.env.COMPOSE ?? "podman compose"} exec -T postgres psql -U sync -d offline_notes -t -A -c ` +
           `"SELECT count(*) FROM oxylite.sync_log WHERE payload->>'title' = '${stamp}'"`,
         { cwd: "..", stdio: ["ignore", "pipe", "ignore"] },
       )
@@ -146,7 +146,7 @@ test("a lost ack resends the batch — the server applies it twice and converges
   await expect.poll(logCount, { timeout: 15_000 }).toBe(2);
 
   const rowCount = execSync(
-    `podman compose exec -T postgres psql -U sync -d offline_notes -t -A -c ` +
+    `${process.env.COMPOSE ?? "podman compose"} exec -T postgres psql -U sync -d offline_notes -t -A -c ` +
       `"SELECT count(*) FROM notes WHERE title = '${stamp}'"`,
     { cwd: "..", stdio: ["ignore", "pipe", "ignore"] },
   )

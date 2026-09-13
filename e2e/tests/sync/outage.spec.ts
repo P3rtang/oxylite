@@ -14,25 +14,28 @@ import { expect, test, type Page } from "@playwright/test";
 // alongside other workers' tests.
 
 function psql(sql: string) {
-  execSync(`podman compose exec -T postgres psql -U sync -d offline_notes -c "${sql}"`, {
+  execSync(`${process.env.COMPOSE ?? "podman compose"} exec -T postgres psql -U sync -d offline_notes -c "${sql}"`, {
     cwd: "..", // playwright runs from e2e/; compose file lives at the repo root
   });
 }
 
 function stopPg() {
-  execSync("podman compose stop postgres", { cwd: "..", stdio: "ignore" });
+  execSync(`${process.env.COMPOSE ?? "podman compose"} stop postgres`, { cwd: "..", stdio: "ignore" });
 }
 
 function startPg() {
-  execSync("podman compose start postgres", { cwd: "..", stdio: "ignore" });
+  execSync(`${process.env.COMPOSE ?? "podman compose"} start postgres`, { cwd: "..", stdio: "ignore" });
 }
 
 function pgReady(): boolean {
   try {
-    execSync("podman compose exec -T postgres pg_isready -U sync -d offline_notes", {
-      cwd: "..",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
+    execSync(
+      `${process.env.COMPOSE ?? "podman compose"} exec -T postgres pg_isready -U sync -d offline_notes`,
+      {
+        cwd: "..",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
     return true;
   } catch {
     return false;

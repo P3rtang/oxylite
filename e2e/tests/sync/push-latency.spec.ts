@@ -63,7 +63,7 @@ const RENDER_WRITES = 3;
 
 function psql(sql: string) {
   return execSync(
-    `podman compose exec -T postgres psql -U sync -d offline_notes -t -A -c "${sql}"`,
+    `${process.env.COMPOSE ?? "podman compose"} exec -T postgres psql -U sync -d offline_notes -t -A -c "${sql}"`,
     { cwd: "..", encoding: "utf8" }, // playwright runs from e2e/; compose file at repo root
   );
 }

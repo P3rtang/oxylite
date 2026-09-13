@@ -1,5 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// The container stack command: podman locally, docker on CI (#39 —
+// COMPOSE env). Same compose.yaml either way.
+const compose = process.env.COMPOSE ?? "podman compose";
+
 export default defineConfig({
   testDir: "./tests",
   timeout: 120_000,
@@ -32,11 +36,12 @@ export default defineConfig({
       // postdates its dist build), then Postgres must be up before the
       // server connects; folded into one command since Playwright only
       // supports http URLs for health checks.
-      command:
-        "DX=$HOME/.cargo/bin/dx ../scripts/build-client.sh && podman compose up -d && cargo run -p server",
+      command: `DX=${process.env.DX_BIN ?? "$HOME/.cargo/bin/dx"} ../scripts/build-client.sh && ${compose} up -d && cargo run -p server`,
       url: "http://localhost:3000/health",
       reuseExistingServer: true,
-      timeout: 180_000,
+      // The dist build (dx wasm) is slower on CI's 2-core runners than
+      // locally — overridable via env (#39).
+      timeout: Number(process.env.WEB_SERVER_TIMEOUT ?? 180_000),
     },
   ],
 });

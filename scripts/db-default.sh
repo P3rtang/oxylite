@@ -17,11 +17,11 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 DUMP="$ROOT/scripts/db-default.sql"
-PSQL=(podman compose exec -T postgres psql -U sync -d offline_notes)
+PSQL=(${COMPOSE:-podman compose} exec -T postgres psql -U sync -d offline_notes)
 
 wait_pg() {
     local elapsed=0
-    until podman compose exec -T postgres psql -U sync -d offline_notes -c "SELECT 1" >/dev/null 2>&1; do
+    until ${COMPOSE:-podman compose} exec -T postgres psql -U sync -d offline_notes -c "SELECT 1" >/dev/null 2>&1; do
         sleep 0.5
         elapsed=$((elapsed + 1))
         if [ "$elapsed" -ge 120 ]; then
@@ -44,11 +44,11 @@ INSERT INTO oxylite.sync_log (table_name, row_id, payload, updated_at)
 
 restore() {
     blue "restoring default database state…"
-    podman compose up -d >/dev/null 2>&1
+    ${COMPOSE:-podman compose} up -d >/dev/null 2>&1
     wait_pg
     # The dump is --clean: drops + recreates each table, so leftover test
     # junk (notes, sync_log, poison rows) cannot survive into the run.
-    podman compose exec -T postgres psql -U sync -d offline_notes \
+    ${COMPOSE:-podman compose} exec -T postgres psql -U sync -d offline_notes \
         -v ON_ERROR_STOP=1 -q <"$DUMP"
     green "default state restored"
 }
@@ -66,8 +66,8 @@ rebuild() {
     fi
     SQLX_OFFLINE=true cargo build -q -p server
 
-    podman compose down -v >/dev/null 2>&1
-    podman compose up -d >/dev/null 2>&1
+    ${COMPOSE:-podman compose} down -v >/dev/null 2>&1
+    ${COMPOSE:-podman compose} up -d >/dev/null 2>&1
     wait_pg
 
     # The fresh binary applies the embedded migrations on boot; that boot
@@ -80,12 +80,12 @@ rebuild() {
     fuser -k "$PORT_SERVER"/tcp >/dev/null 2>&1 || true
     sleep 1
 
-    podman compose exec -T postgres psql -U sync -d offline_notes \
+    ${COMPOSE:-podman compose} exec -T postgres psql -U sync -d offline_notes \
         -v ON_ERROR_STOP=1 -q <<<"$SEED_SQL"
     # pg_dump, normalized: _sqlx_migrations' installed_on / validation_time
     # are wall-clock side effects of the migration run — pinned so `rebuild`
     # is byte-stable and never churns the committed file.
-    podman compose exec -T postgres pg_dump -U sync --clean --if-exists \
+    ${COMPOSE:-podman compose} exec -T postgres pg_dump -U sync --clean --if-exists \
         offline_notes | awk -F'\t' -v OFS='\t' '
         /^COPY public\._sqlx_migrations / { inblk = 1; print; next }
         # the COPY terminator is the two-character line "\."

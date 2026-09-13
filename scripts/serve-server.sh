@@ -9,8 +9,8 @@ if is_running "$PORT_SERVER"; then
     exit 0
 fi
 
-blue "starting Postgres (podman compose)…"
-(cd "$ROOT" && podman compose up -d) >/dev/null 2>&1 || red "podman compose failed — check .logs/server.log"
+blue "starting Postgres (${COMPOSE:-podman compose})…"
+(cd "$ROOT" && ${COMPOSE:-podman compose} up -d) >/dev/null 2>&1 || red "${COMPOSE:-podman compose} failed — check .logs/server.log"
 
 wait_for_pg 30 || { red "postgres not ready after 30s — check .logs/server.log"; exit 1; }
 

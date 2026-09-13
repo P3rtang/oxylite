@@ -83,7 +83,7 @@ test("cold client bulk-loads a snapshot instead of replaying row by row", async 
     ` INSERT INTO oxylite.sync_log (table_name, row_id, payload, updated_at)` +
     ` SELECT 'notes', id, jsonb_build_object('id', id, 'title', title, 'body', body, 'updated_at', updated_at), updated_at` +
     ` FROM notes WHERE title LIKE '${stamp}%';`;
-  execSync(`podman compose exec -T postgres psql -U sync -d offline_notes -c "${sql}"`, {
+  execSync(`${process.env.COMPOSE ?? "podman compose"} exec -T postgres psql -U sync -d offline_notes -c "${sql}"`, {
     cwd: "..", // playwright runs from e2e/; compose file lives at the repo root
   });
 

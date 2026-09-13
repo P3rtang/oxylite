@@ -32,7 +32,7 @@ async function deleteNote(page: Page, title: string) {
 }
 
 function psql(sql: string) {
-  execSync(`podman compose exec -T postgres psql -U sync -d offline_notes -c "${sql}"`, {
+  execSync(`${process.env.COMPOSE ?? "podman compose"} exec -T postgres psql -U sync -d offline_notes -c "${sql}"`, {
     cwd: "..", // playwright runs from e2e/; compose file lives at the repo root
   });
 }
@@ -53,7 +53,7 @@ function rowIdByTitle(title: string): string {
   // The live row may already be deleted (that is the point of these
   // tests) — the create op's payload in sync_log outlives it.
   return execSync(
-    `podman compose exec -T postgres psql -U sync -d offline_notes -tAc ` +
+    `${process.env.COMPOSE ?? "podman compose"} exec -T postgres psql -U sync -d offline_notes -tAc ` +
       `"SELECT row_id FROM oxylite.sync_log WHERE payload->>'title' = '${title}' LIMIT 1"`,
     { cwd: "..", encoding: "utf8" },
   ).trim();
