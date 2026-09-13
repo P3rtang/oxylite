@@ -64,7 +64,9 @@ jobs:
         with:
           tool: cargo-binstall
       - name: dx (prebuilt release via binstall — no source build)
-        run: cargo binstall --yes "dioxus-cli@${DX_VERSION}"
+        # -y = --no-confirm (binstall's non-interactive flag; there is
+        # no --yes long form).
+        run: cargo binstall -y "dioxus-cli@${DX_VERSION}"
       - name: gate + e2e (dist freshness is owned by the webServer step)
         env:
           WEB_SERVER_TIMEOUT: "600000"

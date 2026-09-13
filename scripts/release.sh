@@ -97,7 +97,7 @@ if [ -n "$MODE" ]; then
         retry) resolve 4 ;;
     esac
 else
-    read -r -p "release type [1/2/3] (default 1): " CHOICE || CHOICE=""
+    read -r -p "release type [1/2/3/4] (default 1): " CHOICE || CHOICE=""
     resolve "${CHOICE:-1}"
 fi
 green "cutting oxylite v$V"
