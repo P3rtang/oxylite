@@ -59,19 +59,12 @@ jobs:
         run: cd e2e && bun install --frozen-lockfile
       - name: playwright chromium (+ system deps)
         run: cd e2e && bunx playwright install --with-deps chromium
-      - name: dx (prebuilt release, cached by version)
-        uses: actions/cache@v4
+      - name: cargo-binstall (the standard prebuilt-binary path)
+        uses: taiki-e/install-action@v2
         with:
-          path: ~/.cargo/bin/dx
-          key: dx-${{ env.DX_VERSION }}
-      - name: fetch dx if not cached
-        run: |
-          if [ ! -x "$HOME/.cargo/bin/dx" ]; then
-            curl -fsSL \
-              "https://github.com/DioxusLabs/dioxus/releases/download/v${DX_VERSION}/dioxus-cli-x86_64-unknown-linux-gnu.tar.gz" \
-              | tar xz -C "$HOME/.cargo/bin"
-            chmod +x "$HOME/.cargo/bin/dx"
-          fi
+          tool: cargo-binstall
+      - name: dx (prebuilt release via binstall — no source build)
+        run: cargo binstall --yes "dioxus-cli@${DX_VERSION}"
       - name: gate + e2e (dist freshness is owned by the webServer step)
         env:
           WEB_SERVER_TIMEOUT: "600000"
