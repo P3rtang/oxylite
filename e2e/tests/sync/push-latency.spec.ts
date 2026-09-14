@@ -59,6 +59,11 @@ const CLOCK_SLACK_MS = 10;
 // pins the machinery (which the drains don't inflate — they sit before
 // the receipt). Pre-fix tail ≈530ms (receipt 330 → visible ~860).
 const TAIL_BUDGET_MS = 900;
+// ≥2/3 writes within the budget; the one outlier must stay under a
+// ceiling that still catches a dead tail (a 5s stall or a never-applied
+// frame). Local tails: 448–728ms; CI's smaller runner: 464–1283ms.
+const TAIL_OUTLIERS_ALLOWED = 1;
+const TAIL_CEILING_MS = 2500;
 const RENDER_WRITES = 3;
 
 function psql(sql: string) {
@@ -207,6 +212,7 @@ test(
     // Sanity waits only: the row must RENDER (loose); the TIMED
     // assertion is the tail below.
     const visibleTs = new Map<string, number>();
+    const tails: { stamp: string; tail: number }[] = [];
     for (const stamp of stamps) {
       await pageA.getByPlaceholder("Note title…").fill(stamp);
       const t0 = Date.now();
@@ -244,7 +250,23 @@ test(
       expect(delivery, `no receipt covering seq ${row!.seq} (${stamp})`).toBeDefined();
       const tail = visible - delivery!.ts;
       console.log(`[push-latency] ${stamp}: receipt→visible ${tail}ms`);
-      expect(tail, `${stamp} client tail too slow`).toBeLessThanOrEqual(TAIL_BUDGET_MS);
+      tails.push({ stamp, tail });
+    }
+
+    // The machinery's shape: ≥2/3 writes within the budget. The wasm
+    // tail on CI's smaller runner inflates ~2–3× under full-suite load
+    // (measured 464ms → 1283ms within ONE run), so one outlier is
+    // tolerated — but a machinery REGRESSION (apply slowdown, a broken
+    // reactive re-run) doubles every tail and fails both bounds.
+    const slow = tails.filter(({ tail }) => tail > TAIL_BUDGET_MS);
+    expect(
+      slow.length,
+      `client tail regime lost: ${tails.map(({ tail }) => tail).join(", ")}ms`,
+    ).toBeLessThanOrEqual(TAIL_OUTLIERS_ALLOWED);
+    for (const { stamp, tail } of slow) {
+      expect(tail, `${stamp} tail beyond the ceiling`).toBeLessThanOrEqual(
+        TAIL_CEILING_MS,
+      );
     }
 
     await ctxA.close();
