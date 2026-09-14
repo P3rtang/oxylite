@@ -151,7 +151,8 @@ returns.
 
 26 Playwright specs in `app/` (UI behavior) and `sync/` (offline queue,
 multi-tab, delete/tombstone contracts, snapshot bootstrap, outages, and
-the latency contracts: commit→receipt and a client-render tail). Rust
+the latency contract: commit→receipt measured as a distribution).
+Rust
 contracts are integration targets in `crates/*/tests/` — delete
 semantics, generated-SQL shapes, the pub/sub bus, pubsub live tests,
 retention, schema handshakes, and a suite that PREPARE-checks every

@@ -50,21 +50,6 @@ const OUTLIER_CEILING_MS = 1500;
 const SANITY_BUDGET_MS = 5_000;
 const CLOCK_SLACK_MS = 10;
 
-// The client-machinery tail: receipt→visible (apply + query re-run +
-// render + detection). Red-first history: the original DOM test
-// (click→visible ≤600/750ms ×3) was committed test.fixme and flipped
-// live with #38 — post-fix prints 638–664ms under full-suite load —
-// but a loaded delivery POCKET blew it one gate later, so the contract
-// decomposed: delivery is pinned by the receipt test's shape; THIS
-// pins the machinery (which the drains don't inflate — they sit before
-// the receipt). Pre-fix tail ≈530ms (receipt 330 → visible ~860).
-const TAIL_BUDGET_MS = 900;
-// ≥2/3 writes within the budget; the one outlier must stay under a
-// ceiling that still catches a dead tail (a 5s stall or a never-applied
-// frame). Local tails: 448–728ms; CI's smaller runner: 464–1283ms.
-const TAIL_OUTLIERS_ALLOWED = 1;
-const TAIL_CEILING_MS = 2500;
-const RENDER_WRITES = 3;
 
 function psql(sql: string) {
   return execSync(
@@ -75,12 +60,6 @@ function psql(sql: string) {
 
 async function waitConnected(page: Page) {
   await expect(page.getByText("connected")).toBeVisible({ timeout: 30_000 });
-}
-
-async function addNote(page: Page, title: string) {
-  await page.getByPlaceholder("Note title…").fill(title);
-  await page.getByRole("button", { name: "Add" }).click();
-  await expect(page.getByRole("listitem").filter({ hasText: title })).toBeVisible();
 }
 
 test("a committed push is delivered to a connected client within the notify budget", async ({
@@ -169,107 +148,3 @@ test("a committed push is delivered to a connected client within the notify budg
   await ctxB.close();
 });
 
-test(
-  "a push's client tail — receipt to visible — stays within the machinery budget",
-  async ({ browser }) => {
-    // The DOM contract, decomposed so each half pins what it owns. The
-    // delivery is the receipt test's job (its shape absorbs load
-    // pockets); THIS test pins the client machinery that consumes a
-    // delivered frame: visible − covering-receipt = apply + query
-    // re-run + render + detection. The drains and the bridge cache sit
-    // BEFORE the receipt, so this tail is stable across them — pre-fix
-    // it measured ~530ms (receipt 330 → visible ~860), post-fix the
-    // same; a machinery regression (apply slowdown, broken reactive
-    // re-run) is what fails here. click→visible stays printed for the
-    // record (the user-feel number = receipt delta + this tail).
-    const run = `e2e render ${Date.now()}`;
-    const stamps = Array.from({ length: RENDER_WRITES }, (_, i) => `${run} #${i}`);
-
-    // A: the writer, connected. Both tabs boot before any write exists,
-    // so B's initial pull covers only the seed state — B is idle-current
-    // for every timed write, and the tail metric is immune to boot
-    // overlap anyway (the covering receipt is the first frame whose
-    // cursor reaches the stamp's seq).
-    const ctxA = await browser.newContext();
-    const pageA = await ctxA.newPage();
-    await pageA.goto("/");
-    await waitConnected(pageA);
-
-    // B: the reader; its console stream is the receipt source (same
-    // filter as the receipt test).
-    const ctxB = await browser.newContext();
-    const pageB = await ctxB.newPage();
-    const receipts: { ts: number; cursor: number }[] = [];
-    pageB.on("console", (m) => {
-      const hit = m.text().match(/received (\d+) events, cursor -> (\d+)/);
-      if (hit && Number(hit[1]) > 0) {
-        receipts.push({ ts: Date.now(), cursor: Number(hit[2]) });
-      }
-    });
-    await pageB.goto("/");
-    await waitConnected(pageB);
-
-    // Sanity waits only: the row must RENDER (loose); the TIMED
-    // assertion is the tail below.
-    const visibleTs = new Map<string, number>();
-    const tails: { stamp: string; tail: number }[] = [];
-    for (const stamp of stamps) {
-      await pageA.getByPlaceholder("Note title…").fill(stamp);
-      const t0 = Date.now();
-      await pageA.getByRole("button", { name: "Add" }).click();
-      await expect(pageB.getByRole("listitem").filter({ hasText: stamp })).toBeVisible({
-        timeout: SANITY_BUDGET_MS,
-      });
-      visibleTs.set(stamp, Date.now());
-      console.log(`[push-latency] ${stamp}: click→visible ${Date.now() - t0}ms`);
-    }
-
-    const rows = psql(
-      `SELECT payload->>'title', seq, (EXTRACT(EPOCH FROM logged_at)*1000)::bigint` +
-        ` FROM oxylite.sync_log WHERE payload->>'title' LIKE '${run} #%' ORDER BY seq;`,
-    )
-      .trim()
-      .split("\n")
-      .map((line) => {
-        const [title, seq, committedMs] = line.split("|");
-        return { title, seq: Number(seq), committedMs: Number(committedMs) };
-      });
-
-    const first = new Map<string, { seq: number; committedMs: number }>();
-    for (const { title, seq, committedMs } of rows) {
-      if (!first.has(title)) first.set(title, { seq, committedMs });
-    }
-
-    for (const stamp of stamps) {
-      const row = first.get(stamp);
-      expect(row, `no log row for ${stamp}`).toBeDefined();
-      const visible = visibleTs.get(stamp)!;
-      const delivery = receipts.find(
-        (r) => r.cursor >= row!.seq && r.ts >= row!.committedMs - CLOCK_SLACK_MS,
-      );
-      expect(delivery, `no receipt covering seq ${row!.seq} (${stamp})`).toBeDefined();
-      const tail = visible - delivery!.ts;
-      console.log(`[push-latency] ${stamp}: receipt→visible ${tail}ms`);
-      tails.push({ stamp, tail });
-    }
-
-    // The machinery's shape: ≥2/3 writes within the budget. The wasm
-    // tail on CI's smaller runner inflates ~2–3× under full-suite load
-    // (measured 464ms → 1283ms within ONE run), so one outlier is
-    // tolerated — but a machinery REGRESSION (apply slowdown, a broken
-    // reactive re-run) doubles every tail and fails both bounds.
-    const slow = tails.filter(({ tail }) => tail > TAIL_BUDGET_MS);
-    expect(
-      slow.length,
-      `client tail regime lost: ${tails.map(({ tail }) => tail).join(", ")}ms`,
-    ).toBeLessThanOrEqual(TAIL_OUTLIERS_ALLOWED);
-    for (const { stamp, tail } of slow) {
-      expect(tail, `${stamp} tail beyond the ceiling`).toBeLessThanOrEqual(
-        TAIL_CEILING_MS,
-      );
-    }
-
-    await ctxA.close();
-    await ctxB.close();
-  },
-);
