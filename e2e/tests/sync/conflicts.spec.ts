@@ -86,15 +86,22 @@ test("a push accepted by a socket the server never saw must still sync", async (
   await ctxB.close();
 });
 
-test("a lost ack resends the batch — the server applies it twice and converges", async ({
+test("a lost ack resends the batch — the server reapplies it and every client converges", async ({
   page,
 }) => {
   // The Ack is itself lossy: the server can apply a push, log it, and
   // have the socket die before the Ack lands. The pending row then
   // survives and the next connect RESENDS it — the server must absorb
-  // the duplicate (guarded upsert is a no-op against the identical
-  // row; the log records both arrivals, the wire history) while every
-  // client still converges to exactly one row.
+  // the duplicates (guarded upsert is a no-op against the identical
+  // row; the log is the wire history) while every client converges to
+  // exactly one row.
+  //
+  // At-least-once bounds NOTHING about the arrival count: each unacked
+  // batch resends on every connect, and the transport has been observed
+  // to double a push outright (the intermittent duplicate in
+  // impl/client-drain.md — three arrivals on CI). The PINNED property
+  // is "the op was not lost" (≥2 arrivals) + exact convergence (one
+  // live row, one UI row, a fresh client agrees).
   //
   // Deterministic by construction: registering onMessage on the
   // SERVER-side route stops Playwright's auto-forwarding in that
@@ -127,8 +134,10 @@ test("a lost ack resends the batch — the server applies it twice and converges
   await page.reload();
   await waitConnected(page); // flush resends the unacked batch
 
-  // The log now records BOTH arrivals (at-least-once, by design) while
-  // the live table holds exactly one row — the duplicate was absorbed.
+  // The log records EVERY arrival (at-least-once, by design — two is
+  // the typical shape: the original + one resend, but the count is
+  // unbounded by contract) while the live table holds exactly one row
+  // — the duplicates were absorbed.
   const logCount = () => {
     try {
       const out = execSync(
@@ -143,7 +152,7 @@ test("a lost ack resends the batch — the server applies it twice and converges
       return 0;
     }
   };
-  await expect.poll(logCount, { timeout: 15_000 }).toBe(2);
+  await expect.poll(logCount, { timeout: 15_000 }).toBeGreaterThanOrEqual(2);
 
   const rowCount = execSync(
     `${process.env.COMPOSE ?? "podman compose"} exec -T postgres psql -U sync -d offline_notes -t -A -c ` +
@@ -154,7 +163,7 @@ test("a lost ack resends the batch — the server applies it twice and converges
     .trim();
   expect(rowCount).toBe("1");
 
-  // One row in the UI, and a fresh client replays both log entries into
+  // One row in the UI, and a fresh client replays every log entry into
   // the same single row — converged, not duplicated.
   await expect(page.getByRole("listitem").filter({ hasText: stamp })).toHaveCount(1);
   const ctxB = await page.context().browser()!.newContext();
