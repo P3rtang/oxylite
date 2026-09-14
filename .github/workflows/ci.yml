@@ -96,4 +96,9 @@ jobs:
       - name: standalone verify build (default features, no services)
         run: cargo publish -p oxylite --dry-run
       - name: publish to crates.io
-        run: cargo publish -p oxylite --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        env:
+          # The env var is cargo's preferred path (`--token` on the CLI
+          # is deprecated). The token needs publish-new for the FIRST
+          # release (it creates the crate); publish-update covers the rest.
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p oxylite
