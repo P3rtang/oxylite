@@ -19,7 +19,7 @@ fn main() {
     // it as EngineError::BadVersion. Without init there is no engine —
     // launching would only hit the documented missing-singleton panic —
     // so the console error IS the message and the app stays down.
-    if let Err(e) = engine::init::<Table>(shared::MIGRATIONS, shared::SCHEMA_VERSION) {
+    if let Err(e) = engine::init::<Table>(shared::APP_MIGRATIONS, shared::SCHEMA_VERSION) {
         engine::log("boot", &format!("engine init failed: {e}"));
         return;
     }

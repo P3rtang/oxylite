@@ -89,7 +89,13 @@ sqlx = { version = "0.8", optional = true, features = [
     "uuid",
     "json",
     "chrono",
+    "migrate",
 ] }
+
+# The migration standard's compile-time half: `oxylite::migrations!`
+# embeds the consumer's migrations/ dir. Published BEFORE oxylite (the
+# dependency arrow points this way) — the release flow tags both.
+oxylite-migrations = { path = "../oxylite-migrations", version = "0.1.0" }
 
 # The bus suite needs tokio's runtime — feature-gated via
 # required-features so default builds skip the target entirely (absent,

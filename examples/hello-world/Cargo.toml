@@ -1,0 +1,19 @@
+[package]
+name = "hello-world"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Detached from the root workspace on purpose: this example consumes the
+# PUBLISHED crates.io artifact exactly as a second app would — nothing
+# here may reach the repo's path crates. `scripts/vendor-pglite.sh 0.5.8
+# examples/hello-world/assets/pglite` vendors the browser bundle once
+# (tracked in git, like the lib's own copy).
+[workspace]
+
+[dependencies]
+# The published 0.1.0, not a path dep: an example that only builds
+# against the local tree proves nothing about the release.
+oxylite = { version = "0.1.0", features = ["client"] }
+dioxus = { version = "0.7", features = ["web"] }
+console_error_panic_hook = "0.1"

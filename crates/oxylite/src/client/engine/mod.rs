@@ -87,7 +87,10 @@ thread_local! {
 }
 
 pub struct Engine<T: SyncTableWire> {
-    /// The app's schema migrations, applied to every fresh local DB.
+    /// The APP's own migrations (`oxylite::migrations!("migrations")` —
+    /// the lib's protocol migrations merge in at `Pglite::init`, which
+    /// every boot path funnels through; never concatenate `MIGRATIONS`
+    /// by hand).
     migrations: &'static [(&'static str, &'static str)],
     /// The app's schema version (the app bakes it; the lib compares).
     version: SchemaVersion,
@@ -124,11 +127,13 @@ pub struct Engine<T: SyncTableWire> {
 /// hooks and callbacks can always reach it. Also joins the cross-tab
 /// channel: from here on every tab participates in the leader election.
 /// `T` is the app's table enum — the ONE instantiation of this library
-/// in the app. `version` is the app's schema version (`SCHEMA_VERSION`
-/// in shared): a malformed const fails with [`EngineError::BadVersion`]
-/// — the app's own setup bug, surfaced where the app can parse it
-/// instead of a hidden panic. On `Err` nothing is registered: the
-/// singleton exists only after `Ok`.
+/// in the app. `migrations` is the APP's own list
+/// (`oxylite::migrations!("migrations")`) — the lib's protocol
+/// migrations merge in at boot. `version` is the app's schema version
+/// (`SCHEMA_VERSION` in shared): a malformed const fails with
+/// [`EngineError::BadVersion`] — the app's own setup bug, surfaced where
+/// the app can parse it instead of a hidden panic. On `Err` nothing is
+/// registered: the singleton exists only after `Ok`.
 pub fn init<T: SyncTableWire>(
     migrations: &'static [(&'static str, &'static str)],
     version: &str,

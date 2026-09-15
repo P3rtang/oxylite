@@ -10,37 +10,17 @@ pub use oxylite::server::{OPS_CHANNEL, spawn_wake_adapter};
 pub use oxylite::server::{SyncError, pull_since};
 pub use oxylite::ws::{DEFAULT_FALLBACK_TICK, sync_router};
 
-/// One migrator over the UNION list (the lib's protocol tables + this
-/// app's tables — `shared::MIGRATIONS` is the merged list shared's
-/// build.rs generates). sqlx validates every applied row against its
-/// list, so lib and app migrations must apply as ONE Migrator sharing
-/// one `_sqlx_migrations` table — two separate migrators fail with
-/// VersionMissing on each other's rows. This IS the app #2 recipe:
-/// concatenate `sync::MIGRATIONS` with your own list, build, run.
+/// One migrator over the UNION list — now one line: the lib's
+/// `server::migrator` merges the lib's protocol migrations with the
+/// app's `APP_MIGRATIONS` (shared's build.rs scans `migrations/`), the
+/// same merge the client's `Pglite::init` does for PGlite. sqlx
+/// validates every applied row against ONE list over ONE
+/// `_sqlx_migrations` table — lib and app must ride together (two
+/// separate migrators fail VersionMissing on each other's rows). This IS
+/// the app recipe: `oxylite::server::migrator(oxylite::migrations!(
+/// "migrations"))`, build, run.
 pub fn migrator() -> sqlx::migrate::Migrator {
-    let migrations = shared::MIGRATIONS
-        .iter()
-        .map(|(name, sql)| {
-            // `NNNN_name` — the four-digit stem is the version; build.rs
-            // enforces the convention (and global uniqueness) at compile
-            // time, so this parse cannot fail.
-            let version: i64 = name[..4].parse().expect("NNNN version stem");
-            sqlx::migrate::Migration::new(
-                version,
-                (*name).into(),
-                sqlx::migrate::MigrationType::Simple,
-                (*sql).into(),
-                false,
-            )
-        })
-        .collect();
-
-    sqlx::migrate::Migrator {
-        migrations: std::borrow::Cow::Owned(migrations),
-        ignore_missing: false,
-        locking: true,
-        no_tx: false,
-    }
+    oxylite::server::migrator(shared::APP_MIGRATIONS)
 }
 
 /// The app's table hookup: ONE arm per table — the row type IS the

@@ -27,7 +27,44 @@ pub use snapshot::{
 };
 pub use wake::{OPS_CHANNEL, spawn_wake_adapter};
 
+use std::borrow::Cow;
 use thiserror::Error;
+
+/// One sqlx Migrator over the UNION of the lib's protocol migrations and
+/// the app's `app` list — pass `oxylite::migrations!("migrations")`, the
+/// SAME list the client boots with. sqlx validates every applied row
+/// against its list over ONE `_sqlx_migrations` table, so lib and app
+/// migrations must ride as ONE migrator (two separate ones fail
+/// VersionMissing on each other's rows); the same merge the client's
+/// `Pglite::init` does for PGlite, so both engines apply identical SQL
+/// in identical order. Version = the NNNN stem (the macro validates the
+/// shape at compile time, so the parse cannot fail). The app's own
+/// `migrator()` becomes one line — the demo's hand-rolled construction
+/// lived in crates/server/src/sync.rs before this existed.
+pub fn migrator(app: &[(&'static str, &'static str)]) -> sqlx::migrate::Migrator {
+    let migrations = crate::migrations_merged(app)
+        .into_iter()
+        .map(|(name, sql)| {
+            let version: i64 = name[..4]
+                .parse()
+                .expect("NNNN version stem — migrations! validates the shape");
+            sqlx::migrate::Migration::new(
+                version,
+                name.into(),
+                sqlx::migrate::MigrationType::Simple,
+                sql.into(),
+                false,
+            )
+        })
+        .collect();
+
+    sqlx::migrate::Migrator {
+        migrations: Cow::Owned(migrations),
+        ignore_missing: false,
+        locking: true,
+        no_tx: false,
+    }
+}
 
 /// Why a server sync operation failed. Typed so callers match on the shape
 /// of the failure; sources convert with `#[from]` (errors-spec shape —

@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# Cut a release of the oxylite library (roadmap 3.1, #39): the CURRENT
-# release is whatever the latest oxylite-v* tag on GitHub says (the tag
-# is authoritative, not the local manifest); the script suggests
-# patch/minor/major and asks 1/2/3 — or takes --patch/--minor/--major
-# directly. Then the dance: bump the manifest, sync the lock, commit,
-# push master, verify the package locally (a packaging failure must not
-# cost a CI round-trip), then tag oxylite-v<version> and push it — the
-# tag is what starts CI (the gate on the tag ref, then the publish).
+# Cut a release of the oxylite library (roadmap 3.1, #39; lockstep #40):
+# BOTH lib crates (oxylite + oxylite-migrations) release at ONE version
+# from ONE oxylite-v* tag — the macro crate is welded to oxylite's merge
+# contract, and the dependency arrow makes oxylite-migrations publish
+# first (oxylite's dry-run/package resolve the dep against crates.io, so
+# nothing of oxylite verifies until the dependency version is live; CI's
+# publish job owns that order). The CURRENT release is whatever the
+# latest oxylite-v* tag on GitHub says (the tag is authoritative, not
+# the local manifest); the script suggests patch/minor/major and asks
+# 1/2/3 — or takes --patch/--minor/--major directly. Then the dance:
+# bump BOTH manifests (+ the dep requirement), sync the lock, commit,
+# push master, verify what CAN be verified locally (macro-crate dry-run,
+# oxylite file inventory), then tag oxylite-v<version> and push it — the
+# tag is what starts CI (the gate on the tag ref, then the ordered
+# publish).
 #
 #   scripts/release.sh              # interactive 1/2/3 (patch default)
 #   scripts/release.sh --minor
@@ -100,30 +107,54 @@ else
     read -r -p "release type [1/2/3/4] (default 1): " CHOICE || CHOICE=""
     resolve "${CHOICE:-1}"
 fi
-green "cutting oxylite v$V"
+green "cutting oxylite v$V (lockstep: oxylite-migrations releases at the same version)"
 
 # ---- the dance
-blue "setting crates/oxylite/Cargo.toml to v$V…"
-# Anchored: only the PACKAGE version line matches (dependency lines are
-# indented or the `dep = { version = … }` form — they never start a line).
+blue "setting both crate manifests to v$V…"
+# Anchored: only the PACKAGE version lines match (dependency lines are
+# indented or the `dep = { version = … }` form — they never start a
+# line). The lockstep is not cosmetic: oxylite's dependency requirement
+# on oxylite-migrations follows the tag, and CI's publish guard checks
+# all three agree (tag ↔ both manifests ↔ the dep req).
 sed -i "s/^version = \".*\"/version = \"$V\"/" crates/oxylite/Cargo.toml
-cargo check -q -p oxylite 2>/dev/null   # syncs Cargo.lock with the manifest
+sed -i "s/^version = \".*\"/version = \"$V\"/" crates/oxylite-migrations/Cargo.toml
+sed -i "s|oxylite-migrations = { path = \"../oxylite-migrations\", version = \"[^\"]*\" }|oxylite-migrations = { path = \"../oxylite-migrations\", version = \"$V\" }|" crates/oxylite/Cargo.toml
+cargo check -q -p oxylite 2>/dev/null   # syncs Cargo.lock with the manifests
 
-if git diff --quiet -- crates/oxylite/Cargo.toml; then
-    # The chosen version equals what the manifest already carries (the
+if git diff --quiet -- crates/oxylite/Cargo.toml crates/oxylite-migrations/Cargo.toml; then
+    # The chosen version equals what the manifests already carry (the
     # first-release drift case: remote at 0.0.0, manifest at 0.1.0,
     # minor bump lands on 0.1.0). No commit — release the manifest as-is.
-    green "manifest already at v$V — no bump commit needed"
+    green "manifests already at v$V — no bump commit needed"
 else
-    git add crates/oxylite/Cargo.toml Cargo.lock
-    git commit -m "oxylite: release v$V"
+    git add crates/oxylite/Cargo.toml crates/oxylite-migrations/Cargo.toml Cargo.lock
+    git commit -m "oxylite: release v$V (oxylite-migrations in lockstep)"
 fi
 
 blue "pushing master…"
 git push origin master
 
-blue "verifying the package locally (dry-run publish — no token, no tag spent)…"
-cargo publish -p oxylite --dry-run
+# The local verify mirrors what CI can do BEFORE the tag's publish job:
+# the macro crate is standalone-verifiable (no deps); oxylite is NOT —
+# its dry-run/package resolve oxylite-migrations against crates.io, and
+# that version does not exist until THIS release publishes it (#40, the
+# publish-order fact). Locally oxylite gets the file-inventory check
+# (the exclude/10MB contract); its full verification (packaging + build)
+# runs in CI after the macro crate lands.
+blue "verifying oxylite-migrations package locally (dry-run publish — no token, no tag spent)…"
+cargo publish -p oxylite-migrations --dry-run
+blue "oxylite file inventory (boot snippet in — the vendored bundle stays out)…"
+# `package --list` needs no registry resolution (unlike package/dry-run,
+# which resolve oxylite-migrations), so this runs pre-publication. The
+# trailing slash matches the bundle dir, not `assets/pglite-boot.js` —
+# the snippet is the lib's own and MUST ship.
+LIST="$(cargo package -p oxylite --list)"
+if echo "$LIST" | grep -q "assets/pglite/"; then
+    red "the vendored bundle leaked into the package — crates.io caps at 10MB"
+    exit 1
+fi
+echo "$LIST" | grep -q "^assets/pglite-boot.js$" \
+    || { red "the boot snippet went missing from the package"; exit 1; }
 
 TAG="oxylite-v$V"
 if [ -n "$RETRY" ]; then
@@ -145,4 +176,4 @@ fi
 blue "tagging $TAG (the tag is what starts CI)…"
 git tag -a "$TAG" -m "oxylite v$V"
 git push origin "$TAG"
-green "released $TAG — the gate runs on the tag ref, then crates.io. Watch the Actions run."
+green "released $TAG — the gate runs on the tag ref, then crates.io in order: oxylite-migrations → oxylite. Watch the Actions run."

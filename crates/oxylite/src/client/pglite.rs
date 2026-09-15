@@ -194,8 +194,16 @@ unsafe extern "C" {
 }
 
 impl Pglite {
-    /// Open (or reopen) the persistent offline database, applying
-    /// `migrations` before anyone can touch it.
+    /// Open (or reopen) the persistent offline database, applying the
+    /// lib's protocol migrations plus `app`'s own migrations before
+    /// anyone can touch it.
+    ///
+    /// `app` is the CONSUMER's list only — `oxylite::migrations!(
+    /// "migrations")` embeds it from the project's migrations/ dir. The
+    /// lib's protocol migrations ride along automatically: they merge
+    /// with `app` here, sorted lexicographically (= applied order), and
+    /// a version collision between the two lists is a loud panic
+    /// (migration_list.rs). Never concatenate `MIGRATIONS` by hand.
     ///
     /// Singleton lifecycle: once a construction succeeds, `INSTANCE` holds
     /// an owned `Pglite` and every later call returns a cheap clone —
@@ -211,19 +219,19 @@ impl Pglite {
     /// instead of opening two emscripten modules on the same IndexedDB
     /// dir. wasm-bindgen async externs auto-await the returned promise.
     ///
-    /// The boot snippet applies `migrations` itself (tracked apply-once in
-    /// the lib's own schema — `SCHEMA.meta` — mirroring sqlx's
-    /// `_sqlx_migrations`).
-    pub async fn init(migrations: &[(&'static str, &'static str)]) -> Result<Pglite, BridgeError> {
+    /// The boot snippet applies the merged list itself (tracked
+    /// apply-once in the lib's own schema — `SCHEMA.meta` — mirroring
+    /// sqlx's `_sqlx_migrations`).
+    pub async fn init(app: &[(&'static str, &'static str)]) -> Result<Pglite, BridgeError> {
         if let Some(existing) = INSTANCE.with(|i| i.borrow().clone()) {
             return Ok(existing);
         }
 
-        // The server serves the vendored bundle at /pglite/ with proper MIME
-        // types. A dynamic import inside eval() can only resolve absolute
-        // URLs, so the snippet builds the full URL from the document
-        // location.
-        let migs: Vec<String> = migrations
+        // The boot snippet applies the MERGED list (lib protocol tables +
+        // the app's) — tracked apply-once in the lib's schema —
+        // `SCHEMA.meta` — mirroring sqlx's `_sqlx_migrations`).
+        let merged = crate::migrations_merged(app);
+        let migs: Vec<String> = merged
             .iter()
             .map(|(name, up)| {
                 format!(
@@ -233,6 +241,10 @@ impl Pglite {
                 )
             })
             .collect();
+        // The server serves the vendored bundle at /pglite/ with proper MIME
+        // types. A dynamic import inside eval() can only resolve absolute
+        // URLs, so the snippet builds the full URL from the document
+        // location.
         let code = format!(
             "({})({}, [{}])",
             PGLITE_BOOT_JS,
@@ -240,11 +252,6 @@ impl Pglite {
             migs.join(",")
         );
 
-        // Ok(value) = the auto-awaited construction promise resolving to the
-        // PGlite instance; Err(value) = its rejection reason. Only a
-        // successful construction is stored, so a failed init leaves the
-        // singleton empty and the next call retries (mirroring the JS-side
-        // `catch` that clears `__pgliteReady`).
         // Ok(value) = the auto-awaited construction promise resolving to the
         // PGlite instance; Err(value) = its rejection reason. Only a
         // successful construction is stored, so a failed init leaves the

@@ -65,7 +65,15 @@ impl<T: SyncTableWire> Engine<T> {
         // GENERATED id (the migration list's length — monotonic, only
         // ever appends), and a stored version newer than this bundle's
         // means this wasm predates the local DB it cannot read (#34).
-        match pglite::ensure_local_compat(pglite::DATA_DIR, self.migrations.len() as u32).await {
+        // The count is the UNION — the lib's protocol migrations merge
+        // in at Pglite::init, so `migrations_total` (not the app list's
+        // len) is what a fresh DB would see.
+        match pglite::ensure_local_compat(
+            pglite::DATA_DIR,
+            crate::migrations_total(self.migrations) as u32,
+        )
+        .await
+        {
             Ok(()) => {}
             Err(e) => {
                 log(

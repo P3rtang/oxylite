@@ -52,6 +52,16 @@ pub use contract::table::{SyncTable, SyncTableWire};
 pub use protocol::timestamp::{Timestamp, TimestampError};
 pub use protocol::{ClientMsg, Op, ServerMsg, TableData, Tombstone};
 
+mod migration_list;
+pub use migration_list::{migrations_merged, migrations_total};
+
+// The migration standard's compile-time half: `oxylite::migrations!(
+// "migrations")` embeds the consumer's `migrations/` dir as a list of
+// `(NNNN_name, sql)` pairs — the APP's list only. The lib's protocol
+// migrations merge in at the boot/migrator entry points (the runtime
+// half above); a consumer never names them.
+pub use oxylite_migrations::migrations;
+
 /// The Postgres schema (namespace) the lib owns on BOTH sides — the
 /// server's real Postgres and the client's PGlite (#32). Every protocol
 /// table the lib creates lives here, so an app's own tables can never
@@ -70,7 +80,9 @@ pub use contract::from_row::{FromJs, FromRow, Row, RowError, Type};
 
 // The lib's own migration list is generated at build time (see
 // build.rs): a scan of migrations/, sorted lexicographically (= applied
-// order, the same contract sqlx::migrate! follows in `server::migrate`),
-// each file embedded with include_str!. Apps concatenate this with
-// their own list for the client's apply-once boot.
+// order, the same contract sqlx::migrate! follows in `server::migrator`),
+// each file embedded with include_str!. It is NOT the consumer's
+// business — `Pglite::init` / `server::migrator` merge it with the app's
+// `migrations!` list automatically (migration_list.rs); apps never
+// concatenate by hand.
 include!(concat!(env!("OUT_DIR"), "/migrations.rs"));

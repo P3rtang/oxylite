@@ -1,0 +1,16 @@
+[application]
+name = "hello-world"
+asset_dir = "assets"
+
+[web.app]
+base_path = "/"
+
+# The serving contract is the demo's (crates/client/Dioxus.toml): a bare
+# dx devserver does NOT serve the vendored bundle — /pglite/* proxies to
+# the example's axum server on :3001, which mounts assets/pglite with the
+# right MIME types. oxylite.sh serve/watch build + start that server.
+[[web.proxy]]
+# 127.0.0.1, not `localhost` — the dev server may resolve localhost to ::1
+# while the server binds IPv4 only, which fails the proxy with 502 (the
+# demo's gotcha, verbatim).
+backend = "http://127.0.0.1:3001/pglite"

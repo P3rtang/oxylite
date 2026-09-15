@@ -75,9 +75,10 @@ pub type Tombstone = oxylite::protocol::Tombstone<Table>;
 pub const SCHEMA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // The demo app's MIGRATION LIST is generated at build time (see
-// build.rs): the UNION of the lib's protocol-table migrations
-// (`../sync/migrations`) and this crate's app-table migrations
-// (`migrations/`), merged by version. One list drives BOTH demo sides —
-// the server's `sqlx::migrate!` (app tables; the lib runs its own via
-// `sync::server::migrate`) and the client's apply-once boot.
+// build.rs): this crate's own app-table migrations (`migrations/`)
+// ONLY — the lib's protocol migrations merge in at the boot/migrator
+// entry points (`Pglite::init` / `oxylite::server::migrator`), so the
+// consumer's list stays the app's own. One list drives BOTH demo sides:
+// the server's migrator (`sync::migrator` → the lib's merge) and the
+// client's apply-once boot.
 include!(concat!(env!("OUT_DIR"), "/migrations.rs"));

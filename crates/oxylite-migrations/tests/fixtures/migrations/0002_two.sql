@@ -1,0 +1,2 @@
+-- two
+CREATE TABLE two ();

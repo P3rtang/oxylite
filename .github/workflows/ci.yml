@@ -1,7 +1,11 @@
-# CI (roadmap 3.1, #39): the gate on every PR/push, and — ONLY on an
-# `oxylite-v*` tag — the publish of the LIB to crates.io. The demo
-# (shared/server/client) never ships: GitHub stores the testing site,
-# crates.io gets the library.
+# CI (roadmap 3.1, #39; publish order #40): the gate on every PR/push,
+# and — ONLY on an `oxylite-v*` tag — the publish of the LIB to
+# crates.io. BOTH lib crates release in lockstep (one tag, one version —
+# the macro crate is welded to oxylite's merge contract), and the
+# dependency arrow dictates the order: oxylite-migrations FIRST, then
+# oxylite (its publish resolves the registry dep and fails while the
+# dependency version is not live). The demo (shared/server/client) never
+# ships: GitHub stores the testing site, crates.io gets the library.
 #
 # Shape notes:
 # - Postgres comes from the repo's compose.yaml (docker compose — CI
@@ -11,9 +15,10 @@
 #   (db-default.sh restore) is the migration.
 # - `test.sh --lint` covers fmt + clippy (host + wasm) + build + all
 #   Rust suites; the bus suite is feature-gated and runs inside it.
-# - The publish job double-checks the tag against the crate version
-#   (consistency by construction — a drifted tag fails loudly, it does
-#   not ship whatever number it carries).
+# - The publish job double-checks the tag against BOTH crate versions
+#   AND oxylite's dependency requirement (consistency by construction —
+#   a drifted tag fails loudly, it does not ship whatever number it
+#   carries).
 name: ci
 
 on:
@@ -73,9 +78,9 @@ jobs:
         run: ./test.sh --e2e
 
   publish:
-    # Tag push only: `oxylite-v*` after the gate is green. The version
-    # lives in oxylite's Cargo.toml (bump by hand; crates.io forbids
-    # re-publishing a version).
+    # Tag push only: `oxylite-v*` after the gate is green. Lockstep
+    # release: the version lives in BOTH manifests (release.sh bumps
+    # them together); crates.io forbids re-publishing a version.
     if: startsWith(github.ref, 'refs/tags/oxylite-v')
     needs: [rust-gate, e2e]
     runs-on: ubuntu-latest
@@ -83,22 +88,52 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: the tag must match the crate version
+      - name: the tag must match both crate versions AND the dep requirement
         run: |
           TAG="${GITHUB_REF#refs/tags/oxylite-v}"
-          CRATE="$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "oxylite") | .version')"
-          echo "tag $TAG — crate $CRATE"
-          [ "$TAG" = "$CRATE" ] || {
-            echo "tag and crate version drift — bump the manifest, re-tag"
+          for CRATE in oxylite-migrations oxylite; do
+            V="$(cargo metadata --no-deps --format-version 1 \
+              | jq -r ".packages[] | select(.name == \"$CRATE\") | .version")"
+            echo "tag $TAG — $CRATE $V"
+            [ "$TAG" = "$V" ] || {
+              echo "tag and $CRATE version drift — bump the manifest, re-tag"
+              exit 1
+            }
+          done
+          REQ="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "oxylite") | .dependencies[] | select(.name == "oxylite-migrations") | .req')"
+          echo "oxylite requires oxylite-migrations $REQ"
+          [ "^$TAG" = "$REQ" ] || {
+            echo "oxylite's dependency requirement on oxylite-migrations drifted from the tag — fix the manifest, re-tag"
             exit 1
           }
-      - name: standalone verify build (default features, no services)
-        run: cargo publish -p oxylite --dry-run
-      - name: publish to crates.io
+      - name: standalone verify (the macro crate has no deps — full check possible pre-publish)
+        run: cargo publish -p oxylite-migrations --dry-run
+      - name: publish oxylite-migrations (first in the dependency arrow)
         env:
           # The env var is cargo's preferred path (`--token` on the CLI
           # is deprecated). The token needs publish-new for the FIRST
           # release (it creates the crate); publish-update covers the rest.
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p oxylite-migrations
+      - name: wait for the registry, verifying oxylite's package while waiting
+        # cargo resolves oxylite's registry dependency at packaging time,
+        # so its verification can only pass once oxylite-migrations is
+        # LIVE on crates.io — which lags the upload by seconds to minutes
+        # (the index queue). The retry loop is both the waiter and
+        # oxylite's own full verification (packaging + compile).
+        run: |
+          for i in $(seq 1 18); do
+            if cargo publish -p oxylite --dry-run; then
+              echo "oxylite-migrations is live — oxylite verified"
+              exit 0
+            fi
+            echo "attempt $i/18 — the dependency is not live yet, retrying in 10s"
+            sleep 10
+          done
+          echo "oxylite-migrations never became resolvable within 3min — check its publish step"
+          exit 1
+      - name: publish to crates.io
+        env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish -p oxylite

@@ -1,4 +1,4 @@
-/target
+target
 **/dist/
 /e2e/node_modules
 /e2e/test-results
@@ -7,3 +7,4 @@
 # session planning/design notes, untracked by convention
 /docs/
 .env
+examples/**/assets
