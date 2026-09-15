@@ -3,7 +3,7 @@ use js_sys::{Function, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
-use crate::contract::from_row::Row;
+use crate::contract::from_row::{Row, RowError};
 
 /// The PGlite data dir inside IndexedDB (IdbFs) — the epoch gate's
 /// database derives its name from this (`<dir>-epoch`), so the compat
@@ -288,6 +288,45 @@ impl Pglite {
             .await
             .map_err(|e| BridgeError::from_rejection(&e))
     }
+
+    /// The Postgres version line (`select version()`) — the boot-prove /
+    /// diagnostics default. Sensible defaults, not a closed surface: the
+    /// general door stays `query` for anything the lib has no opinion
+    /// about.
+    pub async fn version(&self) -> Result<String, BridgeError> {
+        let result = self.query("select version()", &[]).await?;
+        rows_of(&result)
+            .into_iter()
+            .next()
+            .ok_or_else(|| BridgeError::Js {
+                message: "version(): empty result".into(),
+            })?
+            .field_req::<String>("version")
+            .map_err(BridgeError::from)
+    }
+
+    /// The migrations applied to THIS local database, in applied order,
+    /// names without the tracker prefix — the apply-once tracker
+    /// (`SCHEMA.meta`, `migration:` keys) is lib-internal knowledge; the
+    /// consumer gets a typed default instead of intuiting the table's
+    /// shape. Same boundary rule as `version`: the general door stays
+    /// `query` (the engine itself reads cursor state from the same
+    /// table directly).
+    pub async fn applied_migrations(&self) -> Result<Vec<String>, BridgeError> {
+        let sql = format!(
+            "select key from {}.meta where key like 'migration:%' order by key",
+            crate::SCHEMA
+        );
+        let result = self.query(&sql, &[]).await?;
+        rows_of(&result)
+            .iter()
+            .map(|r| {
+                r.field_req::<String>("key")
+                    .map(|k| k.strip_prefix("migration:").unwrap_or(&k).to_string())
+                    .map_err(BridgeError::from)
+            })
+            .collect()
+    }
 }
 
 /// The common JS↔Rust error exchange: every rejection crossing the bridge
@@ -341,6 +380,18 @@ impl BridgeError {
         match code {
             Some(code) => Self::Postgres { code, message },
             None => Self::Js { message },
+        }
+    }
+}
+
+impl From<RowError> for BridgeError {
+    /// Row-read failures are display-shaped at the bridge boundary the
+    /// same way JS rejections arrive — a message rides the error (there
+    /// is no code to carry), so call sites can `?` instead of hand-
+    /// mapping every read.
+    fn from(e: RowError) -> Self {
+        Self::Js {
+            message: e.to_string(),
         }
     }
 }

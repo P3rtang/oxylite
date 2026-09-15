@@ -1,23 +1,17 @@
 //! examples/hello-world — the smallest oxylite consumer: boot the local
 //! PGlite database (IndexedDB) and prove it on the page. No sync server,
-//! no engine, no app tables — just `Pglite::init` applying the lib's own
-//! migrations. Later steps (engine, live queries, a server) extend this
-//! page progressively.
+//! no engine, no app tables of consequence — `Pglite::init` boots the
+//! MERGED migration list (the lib's protocol tables + this app's
+//! `migrations/`, the standard since 0.1.1). Later steps (engine, live
+//! queries, sync) extend this page progressively.
 //!
-//! Run: vendor the bundle once (`scripts/oxylite.sh init` from this
-//! directory — the consumer bootstrap — or `scripts/vendor-pglite.sh
-//! 0.5.8 examples/hello-world/assets/pglite`). Serving is this example's
-//! own axum server (server/ — the demo's crates/server in miniature: one
-//! origin for the built page and the bundle at /pglite/). `scripts/
-//! oxylite.sh serve` builds the client + starts the server; `scripts/
-//! oxylite.sh watch` adds dx's devserver with the Dioxus.toml proxy for
-//! hot reload (the demo's dev.sh shape). The boot snippet dynamic-imports
-//! /pglite/index.js from the page origin — a bare `dx serve` does NOT
-//! provide that mount (dx only bundles manganis-processed assets).
+//! Run: `scripts/oxylite.sh serve` from this directory (builds the
+//! client + starts server/, one origin for the page and the bundle at
+//! /pglite/) or `scripts/oxylite.sh watch` for hot reload via the dx
+//! devserver + Dioxus.toml proxy (the demo's dev.sh shape).
 
 use dioxus::prelude::*;
-use oxylite::BridgeError;
-use oxylite::client::pglite::{Pglite, rows_of};
+use oxylite::client::pglite::{BridgeError, Pglite};
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -25,9 +19,10 @@ fn main() {
 }
 
 /// What the page shows once boot settles: the server identity line and
-/// the migrations the apply-once boot applied (the lib's protocol tables
-/// in schema `oxylite`). Clone so the component can copy the signal's
-/// value out before rendering.
+/// the migrations the apply-once boot applied — the lib's typed defaults
+/// (`Pglite::version` / `Pglite::applied_migrations`) answer both; the
+/// raw query door stays open for anything they don't cover. Clone so the
+/// component can copy the signal's value out before rendering.
 #[derive(Clone)]
 struct Boot {
     version: String,
@@ -73,43 +68,18 @@ fn App() -> Element {
 
 async fn boot_pglite() -> Result<Boot, BridgeError> {
     // THE MIGRATION STANDARD (≥0.1.1): the app drops NNNN_name.sql files
-    // into migrations/ and calls `Pglite::init(oxylite::migrations!(
-    // "migrations"))` — the macro embeds the app's list at compile time,
-    // the lib's protocol migrations merge in at boot automatically; the
-    // consumer never names them. This example pins the PUBLISHED 0.1.0
-    // exactly as a second app would (see Cargo.toml), and 0.1.0's init
-    // took the FULL list — so the pre-standard call below. One-line flip
-    // (plus migrations/ + a rerun-if-changed build.rs) once 0.1.1 ships.
-    let db = Pglite::init(oxylite::MIGRATIONS).await?;
-
-    let version = db.query("select version()", &[]).await?;
-    let version = rows_of(&version)[0]
-        .field_req::<String>("version")
-        // Row-read failures are display-shaped at the page boundary the
-        // same way JS rejections arrive (a message rides the error).
-        .map_err(|e| BridgeError::Js {
-            message: e.to_string(),
-        })?;
-
-    let migs = db
-        .query(
-            "select key from oxylite.meta where key like 'migration:%' order by key",
-            &[],
-        )
-        .await?;
-    let migrations = rows_of(&migs)
-        .iter()
-        .map(|r| {
-            r.field_req::<String>("key")
-                .map(|k| k.strip_prefix("migration:").unwrap_or(&k).to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| BridgeError::Js {
-            message: e.to_string(),
-        })?;
+    // into migrations/ and passes `oxylite::migrations!("migrations")` —
+    // the macro embeds the app's list at compile time; the lib's
+    // protocol migrations merge in at boot automatically (sorted, one
+    // applied list on both engines). The consumer never names them, and
+    // this file (migrations/0001_hello.sql) was the whole job.
+    //
+    // The proof line uses the lib's typed defaults — no hand-written SQL
+    // against the lib's own tables.
+    let db = Pglite::init(oxylite::migrations!("migrations")).await?;
 
     Ok(Boot {
-        version,
-        migrations,
+        version: db.version().await?,
+        migrations: db.applied_migrations().await?,
     })
 }

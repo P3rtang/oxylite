@@ -1,6 +1,6 @@
 [package]
 name = "hello-world"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 publish = false
 
@@ -12,8 +12,10 @@ publish = false
 [workspace]
 
 [dependencies]
-# The published 0.1.0, not a path dep: an example that only builds
-# against the local tree proves nothing about the release.
-oxylite = { version = "0.1.0", features = ["client"] }
+# The published 0.1.1, not a path dep: an example that only builds
+# against the local tree proves nothing about the release. 0.1.1 is the
+# migration standard's floor (`oxylite::migrations!` + the auto-merge
+# init — #40).
+oxylite = { version = "0.1.1", features = ["client"] }
 dioxus = { version = "0.7", features = ["web"] }
 console_error_panic_hook = "0.1"

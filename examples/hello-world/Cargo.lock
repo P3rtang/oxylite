@@ -1329,7 +1329,7 @@ dependencies = [
 
 [[package]]
 name = "hello-world"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "console_error_panic_hook",
  "dioxus",
@@ -1997,15 +1997,16 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "oxylite"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3786b52f60c362d4b8bfe2b61be2a8da67f8fb023fc013938d057bdc85458f82"
+checksum = "6c2ad4e9570e55bc7c0c6d8d3a682111ab277c71949b05977dc6e2133653351d"
 dependencies = [
  "chrono",
  "dioxus",
  "enum-iterator",
  "futures",
  "js-sys",
+ "oxylite-migrations",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -2014,6 +2015,12 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
 ]
+
+[[package]]
+name = "oxylite-migrations"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25fbcf5a89e582b6092864e27d4c204533b24f1bc92ad9df01d2e4a8c24249ce"
 
 [[package]]
 name = "parking_lot"
