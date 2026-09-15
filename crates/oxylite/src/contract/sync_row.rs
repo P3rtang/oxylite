@@ -17,6 +17,9 @@
 
 use crate::SCHEMA;
 use crate::contract::table::{SyncTable, SyncTableWire};
+use crate::protocol::Op;
+use crate::protocol::timestamp::Timestamp;
+use serde::Serialize;
 use uuid::Uuid;
 
 /// The contract a synced row type fulfills. Reads are a separate
@@ -69,6 +72,78 @@ pub trait SyncRow: Sized {
             .position(|c| Some(*c) == Self::LWW)
             .unwrap_or(0);
         self.params()[idx].clone()
+    }
+
+    /// The op this row IS — the derivable default every engine write
+    /// path builds on (and composite app types compose): the table, the
+    /// pk, the row's wire JSON, and the ordering axis — the row's own
+    /// LWW value when the table has one, else the caller's `now` (the
+    /// trait never reads a clock by ruling; the caller injects it — the
+    /// engine passes its js-clock `now()`, a composite save passes the
+    /// one it stamped the batch with).
+    ///
+    /// Panics are construction-guaranteed invariants, not data paths:
+    /// the wire JSON of a plain data row cannot fail to serialize, and
+    /// `lww_value()` is contract-bound to canonical text, which parses
+    /// losslessly. `Self: Serialize` stays a METHOD bound, not a trait
+    /// supertrait (same single-proof-path reasoning as SyncTable's — a
+    /// row that doesn't ride the wire serde overrides `op` instead).
+    fn op(&self, now: Timestamp) -> Op<Self::Table>
+    where
+        Self: Serialize,
+    {
+        Op {
+            table: Self::TABLE,
+            id: self.pk(),
+            data: serde_json::to_value(self)
+                .expect("row wire serialization cannot fail for a plain data row"),
+            updated_at: match Self::LWW {
+                Some(_) => Timestamp::parse(&self.lww_value())
+                    .expect("canonical LWW text round-trips into a Timestamp"),
+                None => now,
+            },
+        }
+    }
+
+    /// The write couple: emit this row's op AND its upsert step in ONE
+    /// call — the shape of the statement and the op it rides are
+    /// structurally inseparable, so a composite save composing these
+    /// (a base table plus its 1-to-many children) cannot forget an op
+    /// per row. The engine's `upsert` is built on this; the ops
+    /// accumulator is the caller's so several rows compose into one
+    /// batch. `Self: Serialize` is a method bound for the same reason
+    /// as `op`.
+    fn upsert_with_ops(
+        &self,
+        now: Timestamp,
+        ops: &mut Vec<Op<Self::Table>>,
+    ) -> (String, Vec<String>)
+    where
+        Self: Serialize,
+    {
+        ops.push(self.op(now));
+        (Self::guarded_upsert_sql(1), self.params())
+    }
+
+    /// The delete half of the couple — an associated function because
+    /// there is no row to derive from: the op is the null payload
+    /// (tombstone marker) stamped with the caller's clock, the step is
+    /// the table's guarded delete bound `(pk, deleted_at)`.
+    fn delete_with_ops(
+        id: Uuid,
+        now: Timestamp,
+        ops: &mut Vec<Op<Self::Table>>,
+    ) -> (String, Vec<String>) {
+        ops.push(Op {
+            table: Self::TABLE,
+            id,
+            data: serde_json::Value::Null,
+            updated_at: now,
+        });
+        (
+            Self::delete_sql(1),
+            vec![id.to_string(), now.canonical_text()],
+        )
     }
 
     /// INSERT for local writes.

@@ -10,8 +10,7 @@ use oxylite::client::engine::RowSink;
 use oxylite::client::pglite::Pglite;
 use oxylite::client::query::apply_ops;
 pub use shared::Note;
-use shared::Timestamp;
-use shared::{Op, Table};
+use shared::{Op, Table, Timestamp};
 use uuid::Uuid;
 
 /// The engine sinks `Table::Notes` ops here (Events and Snapshots,
@@ -21,23 +20,18 @@ pub fn notes_sink() -> RowSink<Table> {
     Rc::new(|db: &Pglite, ops: &[Op]| Box::pin(apply_ops::<Note>(db, ops)))
 }
 
-pub fn new_note(title: &str) -> Note {
+/// Row construction only — the op it rides and the write that lands it
+/// are the engine's (`e.upsert(&note)`); the clock is injected (the
+/// engine's `now()`), so no file here touches js_sys.
+pub fn new_note(title: &str, now: Timestamp) -> Note {
     Note {
         // UUIDv7: time-ordered, so both the local and remote primary-key
         // indexes stay hot and rows sort by creation.
         id: Uuid::now_v7(),
         title: title.into(),
         body: String::new(),
-        updated_at: now_timestamp(),
+        updated_at: now,
     }
-}
-
-/// The platform clock, as a `Timestamp`: `Date.now()` epoch millis →
-/// `from_epoch_millis`. No strings, no parse, no failure path on a write
-/// (real clock values are always inside chrono's range).
-fn now_timestamp() -> Timestamp {
-    Timestamp::from_epoch_millis(js_sys::Date::now() as i64)
-        .expect("js clock value out of chrono's range")
 }
 
 /// Display form: `2026-09-09T12:34:56.789Z` renders as
@@ -48,23 +42,4 @@ pub fn display_time(ts: &Timestamp) -> String {
         .unwrap_or(&iso)
         .replacen('T', " ", 1)
         .to_string()
-}
-
-pub fn op_for_note(note: &Note) -> Op {
-    Op {
-        table: Table::Notes,
-        id: note.id,
-        data: serde_json::to_value(note).unwrap(),
-        updated_at: note.updated_at,
-    }
-}
-
-/// A delete is an op like any other: the null payload is the marker.
-pub fn op_for_delete(id: Uuid) -> Op {
-    Op {
-        table: Table::Notes,
-        id,
-        data: serde_json::Value::Null,
-        updated_at: now_timestamp(),
-    }
 }

@@ -74,8 +74,9 @@ async fn boot_pglite() -> Result<Boot, BridgeError> {
     // applied list on both engines). The consumer never names them, and
     // this file (migrations/0001_hello.sql) was the whole job.
     //
-    // The proof line uses the lib's typed defaults — no hand-written SQL
-    // against the lib's own tables.
+    // The proof reads are the lib's typed defaults (0.1.2) — no
+    // hand-written SQL against the lib's own tables; the raw `query`
+    // door stays open for anything they don't cover.
     let db = Pglite::init(oxylite::migrations!("migrations")).await?;
 
     Ok(Boot {

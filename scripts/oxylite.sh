@@ -3,6 +3,9 @@
 ##
 ## usage:
 ##   oxylite.sh init [version]     vendor the PGlite bundle → ./assets/pglite
+##   oxylite.sh migrate up <name>  scaffold the next NNNN_name.sql in the
+##                                 app's migrations dir (up only — `add`,
+##                                 i.e. up + down pairs, is future work)
 ##   oxylite.sh serve              build the client once + serve page and
 ##                                 bundle from the consumer's axum server (./server)
 ##   oxylite.sh watch [dx args…]   same + dx devserver with hot reload (dx serve)
@@ -11,6 +14,8 @@
 ## - DX (dioxus CLI path)
 ## - PGLITE_DEST (vendor target, default assets/pglite)
 ## - PGLITE_VERSION (default 0.5.8, the lib's vendored copy)
+## - OXYLITE_MIGRATIONS_DIR (migrations dir for `migrate up`; same env
+##   the `migrations!` macro reads — default ./migrations)
 ## - SERVER_PORT (consumer server, default 3001) / PORT (dx devserver, 8080)
 #
 # init mirrors the lib repo's scripts/vendor-pglite.sh (same npm source,
@@ -146,6 +151,65 @@ prep_consumer() {
     green "server ready:  http://localhost:$SERVER_PORT  (pglite at /pglite)"
 }
 
+# Scaffold the next up migration in the consumer's migrations dir — the
+# standard's day-one motion: `oxylite.sh migrate up <name>` computes the
+# next free NNNN, validates the stem against the macro's rule (so a bad
+# name fails here, not at compile), and writes the file. UP ONLY by
+# ruling: `add` (an up + down pair) is reserved for the future
+# omnidirectional story, so the verb stays honest about what it creates.
+migrate_up() { # name...
+    local dir="${OXYLITE_MIGRATIONS_DIR:-migrations}"
+    [ $# -ge 1 ] || { red "usage: oxylite.sh migrate up <name-of-migration>"; exit 1; }
+
+    # Normalize: lowercase, whitespace runs → single underscore (the
+    # demo's house style: 0001_notes, 0008_notes_timestamptz). Hyphens
+    # stay legal — the macro only cares about the NNNN_ prefix.
+    local name
+    name="$(echo "$*" | tr '[:upper:]' '[:lower:]' | tr -s ' _' '_' | sed 's/^_*//; s/_*$//')"
+    [ -n "$name" ] || { red "empty migration name"; exit 1; }
+
+    mkdir -p "$dir"
+    # Next free NNNN: max stem version + 1 (down files share their up's
+    # number — they cannot skew the max). Five digits are REJECTED by
+    # the macro on purpose ("10000" sorts before "9999"), so hitting
+    # 10000 is a hard stop, not a wrap.
+    local next=1 f stem
+    for f in "$dir"/*.sql; do
+        [ -e "$f" ] || continue
+        stem="${f##*/}"; stem="${stem%%_*}"
+        [[ "$stem" =~ ^[0-9]{4}$ ]] || continue
+        [ $((10#$stem)) -ge "$next" ] && next=$((10#$stem + 1))
+    done
+    [ "$next" -le 9999 ] || {
+        red "migrations dir exhausted — next number would be $next and the convention caps at 9999"
+        exit 1
+    }
+
+    local file fname stem rest
+    file="$(printf '%s/%04d_%s.sql' "$dir" "$next" "$name")"
+    fname="${file##*/}"
+    stem="${fname%%_*}"
+    rest="${fname#*_}"
+
+    # Same check the macro compiles with — validate here so the error
+    # carries the file's intent, not a compile error's location.
+    if [ ${#stem} -ne 4 ] || [ -z "$rest" ]; then
+        red "normalized name does not satisfy NNNN_name: $file"
+        exit 1
+    fi
+
+    [ -e "$file" ] && { red "already exists: $file"; exit 1; }
+    cat > "$file" <<EOF
+-- ${name} — up migration (applied once, lexicographic order == applied
+-- order on both engines). Postgres + PGlite compatible SQL; the down
+-- half is future work (the omnidirectional \`add\`).
+EOF
+
+    green "created $file"
+    blue "write the SQL; the next build embeds it (a one-line build.rs with"
+    blue 'cargo:rerun-if-changed=migrations keeps new files picked up)'
+}
+
 # The command word is not a dx argument — shift it off so the passthrough
 # args (`$@`) are exactly what serve/watch forward to the CLI.
 cmd="${1:-}"
@@ -156,6 +220,17 @@ case "$cmd" in
         # Explicit init: always re-vendors (the re-run is the point —
         # bump the version arg to upgrade the bundle).
         vendor "$DEST" "${1:-$VERSION}"
+        ;;
+    migrate)
+        # One verb today (`up`); the namespace is reserved — down/status
+        # ride the future omnidirectional story, not ad-hoc scripts.
+        verb="${1:-}"
+        [ $# -gt 0 ] && shift
+        case "$verb" in
+            up) migrate_up "$@" ;;
+            '') red "migrate needs a verb: up (down/status are future work)"; exit 1 ;;
+            *) red "migrate $verb is not implemented (up is; add → up + down is future work)"; exit 1 ;;
+        esac
         ;;
     serve)
         [ $# -eq 0 ] || { red "serve takes no args (watch carries the dx passthrough)"; exit 1; }

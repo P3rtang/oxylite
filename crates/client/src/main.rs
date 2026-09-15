@@ -6,11 +6,10 @@ mod notes;
 mod notify;
 
 use dioxus::prelude::*;
-use notes::{Note, display_time, new_note, notes_sink, op_for_delete, op_for_note};
+use notes::{Note, display_time, new_note, notes_sink};
 use notify::{Notice, NoticeOverlay, notify};
 use oxylite::client::engine::{self, EngineError, engine};
 use oxylite::client::query::use_select_all;
-use shared::SyncRow;
 use shared::Table;
 
 fn main() {
@@ -104,17 +103,16 @@ fn App() -> Element {
     }
 }
 
-/// Store the note locally, then push it (or queue it while offline). The
-/// engine's invalidation bump re-runs the live list query — no manual
-/// refresh, and the exact same path a remote event takes.
+/// Store the note locally, then push it (or queue it while offline) —
+/// one `upsert` call: the engine derives the op from the row, persists it
+/// write-ahead, runs the guarded upsert, and bumps the live list query.
+/// No manual refresh, and the exact same path a remote event takes.
 ///
-/// Push FIRST (the engine persists the op write-ahead), then write
-/// locally: a crash between the two leaves an op that resends on
-/// reconnect, whose echo re-applies the row locally (#33). The local
-/// write is therefore the same guarded upsert remote events use — an
-/// echo racing this exec is an idempotent overwrite, never a
-/// duplicate-key failure. A failed local write is surfaced, but the op
-/// still syncs: the server is the source of truth.
+/// Push FIRST is the engine's ordering now (write()): a crash between the
+/// durable op and the local write leaves an op that resends on
+/// reconnect, whose echo re-applies the row locally (#33). A failed
+/// local write is surfaced, but the op still syncs: the server is the
+/// source of truth.
 fn submit(mut title_input: Signal<String>) {
     let t = title_input.read().clone();
     if t.is_empty() {
@@ -124,16 +122,8 @@ fn submit(mut title_input: Signal<String>) {
 
     spawn(async move {
         let e = engine();
-        let note = new_note(&t);
-        e.push(op_for_note(&note)).await;
-        if let Err(err) = e
-            .exec(
-                &Note::guarded_upsert_sql(1),
-                &note.params(),
-                &[(Note::TABLE, note.id)],
-            )
-            .await
-        {
+        let note = new_note(&t, e.now());
+        if let Err(err) = e.upsert(&note).await {
             notify(Notice::new("Write failed", err.to_string()));
         }
     });
@@ -141,25 +131,14 @@ fn submit(mut title_input: Signal<String>) {
 
 /// Remove the note locally (real delete — the row is gone; the guarded
 /// statement tombstones exactly what it removed), then push the delete op
-/// (or queue it while offline). Same path a remote delete event takes on
-/// the receiving side.
-///
-/// Push FIRST, like `submit`: the op is durable before the local delete
-/// runs, and the delete statement is already idempotent (a replayed or
-/// echoed delete against a gone row is a no-op).
+/// (or queue it while offline). One `delete` call — the engine builds the
+/// null-payload op with its own clock, persists it write-ahead, then runs
+/// the guarded delete. Same path a remote delete event takes on the
+/// receiving side.
 fn delete_note(id: uuid::Uuid) {
     spawn(async move {
         let e = engine();
-        let op = op_for_delete(id);
-        e.push(op.clone()).await;
-        if let Err(err) = e
-            .exec(
-                &Note::delete_sql(1),
-                &[id.to_string(), op.updated_at.canonical_text()],
-                &[(Note::TABLE, id)],
-            )
-            .await
-        {
+        if let Err(err) = e.delete::<Note>(id).await {
             notify(Notice::new("Delete failed", err.to_string()));
         }
     });

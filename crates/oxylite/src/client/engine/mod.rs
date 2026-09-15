@@ -48,7 +48,9 @@ use wasm_bindgen::{JsCast, JsValue};
 use crate::client::pglite::{self, Pglite};
 use crate::client::query::{Query, Subscription, SubscriptionGuard, SubscriptionId};
 use crate::contract::from_row::FromRow;
+use crate::contract::sync_row::SyncRow;
 use crate::contract::table::SyncTableWire;
+use crate::protocol::timestamp::Timestamp;
 use crate::protocol::{Op, SchemaVersion};
 
 use relay::{Role, TabMsg};
@@ -285,6 +287,13 @@ impl<T: SyncTableWire> Engine<T> {
     /// identically. The write is the caller's to check: a failed local
     /// write is returned, not swallowed (the op can still be pushed — the
     /// server is the source of truth and will sync it back).
+    ///
+    /// This is the UNSYNCED door: no ops are dispatched here, so a row
+    /// written through it diverges until some later echo overwrites it.
+    /// Row writes belong in `upsert`/`delete`/`write` (op + statement
+    /// inseparable by construction); `exec` is for writes that must NOT
+    /// sync — schema fixups, local-only meta. The name is kept per
+    /// reviewer ruling; the doc carries the boundary.
     pub async fn exec(
         &self,
         sql: &str,
@@ -337,6 +346,81 @@ impl<T: SyncTableWire> Engine<T> {
                 }
             }
         }
+    }
+
+    /// The client's clock, as a `Timestamp` (js `Date.now()` epoch
+    /// millis). The engine owns the platform wiring so app write paths
+    /// never read a clock directly — the `Timestamp` type itself stays
+    /// clock-free by ruling (it parses what a producer hands it).
+    pub fn now(&self) -> Timestamp {
+        Timestamp::from_epoch_millis(js_sys::Date::now() as i64)
+            .expect("js clock value out of chrono's range")
+    }
+
+    /// The composite write primitive: persist ALL ops durably FIRST
+    /// (write-ahead — the ordering the demo's submit-path doc comment
+    /// used to teach), then run the local statements in order, then bump
+    /// ONCE (a mid-step bump would let a query re-run against partially
+    /// written state — base row present, child rows not). The steps are
+    /// `(sql, params)` pairs so a composite save (a base table plus its
+    /// child rows) runs FK-safe order without multi-statement gambles;
+    /// each is one `exec`-shaped statement.
+    ///
+    /// Failure semantics: a failed push is surfaced via `LAST_ERROR`
+    /// (same as `push` — the op may be lost, the write stays local); a
+    /// failed step returns `Err` with earlier steps already applied —
+    /// the ops are durable, the server is the source of truth, and the
+    /// echoes heal the local side (the same story single-row writes
+    /// had).
+    pub async fn write(
+        &self,
+        ops: &[Op<T>],
+        steps: &[(String, Vec<String>)],
+        touched: &[(T, Uuid)],
+    ) -> Result<(), EngineError> {
+        for op in ops {
+            self.push(op.clone()).await;
+        }
+        match self.wait_role().await {
+            Role::Leader => {
+                for (sql, params) in steps {
+                    self.exec_local(sql, params, &[]).await?;
+                }
+            }
+            Role::Follower => {
+                for (sql, params) in steps {
+                    self.exec_remote(sql, params, &[]).await?;
+                }
+            }
+        }
+        self.bump(touched);
+        Ok(())
+    }
+
+    /// The default upsert: derive the op from the row (`SyncRow::op`),
+    /// persist it write-ahead, then run the row's own guarded upsert —
+    /// the whole local-write convention in one call, so an app write
+    /// site can neither forget the op nor mis-order it. The row's LWW
+    /// timestamp carries the ordering (an LWW-less row falls back to the
+    /// engine's clock inside `op`).
+    pub async fn upsert<R>(&self, row: &R) -> Result<(), EngineError>
+    where
+        R: SyncRow<Table = T> + serde::Serialize,
+    {
+        let mut ops = Vec::new();
+        let (sql, params) = row.upsert_with_ops(self.now(), &mut ops);
+        self.write(&ops, &[(sql, params)], &[(R::TABLE, row.pk())])
+            .await
+    }
+
+    /// The default delete: the null-payload op and the guarded delete
+    /// step come out of the `delete_with_ops` couple (no row to derive
+    /// from — the op is stamped with the engine's clock), persisted
+    /// write-ahead, then executed. A replayed delete is a no-op.
+    pub async fn delete<R: SyncRow<Table = T>>(&self, id: Uuid) -> Result<(), EngineError> {
+        let mut ops = Vec::new();
+        let (sql, params) = R::delete_with_ops(id, self.now(), &mut ops);
+        self.write(&ops, &[(sql, params)], &[(R::TABLE, id)]).await
     }
 
     /// Fire the rev signal of every registered query whose deps match one
