@@ -164,6 +164,52 @@ fn the_delete_couple_emits_the_tombstone_op_and_step() {
     assert_eq!(params, vec![id.to_string(), canonical(7_000)]);
 }
 
+/// A typed-column sibling — exercises the TYPES map the counter
+/// exposed (the guarded form's VALUES alias loses target context, so
+/// undeclared columns cast ::text and a non-text column needs the
+/// declaration).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct WidgetT {
+    id: Uuid,
+    name: String,
+    qty: i64,
+    updated_at: String,
+}
+
+impl SyncRow for WidgetT {
+    type Table = Widgets;
+    const TABLE: Widgets = Widgets::W;
+    const COLUMNS: &'static [&'static str] = &["id", "name", "qty", "updated_at"];
+    const LWW: Option<&'static str> = Some("updated_at");
+    const PK: &'static str = "id";
+    const TYPES: &'static [(&'static str, oxylite::SqlType)] =
+        &[("qty", oxylite::SqlType::Integer)];
+    fn params(&self) -> Vec<String> {
+        vec![
+            self.id.to_string(),
+            self.name.clone(),
+            self.qty.to_string(),
+            self.updated_at.clone(),
+        ]
+    }
+    fn pk(&self) -> Uuid {
+        self.id
+    }
+}
+
+#[test]
+fn a_declared_column_casts_explicitly_where_target_context_is_lost() {
+    // The guarded upsert consumes rows through the VALUES alias: pk →
+    // uuid, LWW → timestamptz, the declared `qty` → integer (the
+    // counter's 42804 regression pin), everything else stays ::text.
+    let sql = WidgetT::guarded_upsert_sql(1);
+    assert!(sql.contains("($1::uuid, $2::text, $3::integer, $4::timestamptz)"));
+    // And the demo-era all-text default is untouched for Note-shaped
+    // tables (no TYPES entry, no LWW interference in non-LWW columns):
+    let plain = Widget::guarded_upsert_sql(1);
+    assert!(plain.contains("$2::text, $3::timestamptz"));
+}
+
 #[test]
 fn rows_compose_into_one_batch_via_the_couple() {
     // The 1-to-many shape: a base op and N child ops accumulate into one

@@ -16,7 +16,8 @@
 ## - PGLITE_VERSION (default 0.5.8, the lib's vendored copy)
 ## - OXYLITE_MIGRATIONS_DIR (migrations dir for `migrate up`; same env
 ##   the `migrations!` macro reads — default ./migrations)
-## - SERVER_PORT (consumer server, default 3001) / PORT (dx devserver, 8080)
+## - SERVER_PORT (override; default := the Dioxus.toml proxy's backend
+##   port — the consumer's own contract) / PORT (dx devserver, 8080)
 #
 # init mirrors the lib repo's scripts/vendor-pglite.sh (same npm source,
 # same file set — the bundle the lib's boot snippet dynamic-imports).
@@ -59,7 +60,7 @@ DX="${DX:-$HOME/.cargo/bin/dx}"
 VERSION="${PGLITE_VERSION:-0.5.8}"
 DEST="${PGLITE_DEST:-assets/pglite}"
 PORT="${PORT:-8080}"
-SERVER_PORT="${SERVER_PORT:-3001}"
+SERVER_PORT="${SERVER_PORT:-}" # derived from Dioxus.toml per consumer
 
 # Logs live in the CONSUMING project (the repo's .logs convention moved
 # with the CLI — the consumer owns its own logs; no basename prefixing,
@@ -128,6 +129,17 @@ prep_consumer() {
     }
     ensure_vendored
 
+    # The server port is the CONSUMER's contract, not the CLI's default:
+    # the Dioxus.toml [[web.proxy]] backend names it (the /pglite mount
+    # the boot snippet needs — hello-world :3001, counter :3002). Same
+    # env override as the macro reads when the project lies elsewhere.
+    SERVER_PORT="${SERVER_PORT:-$(sed -n 's|^backend = "http://127.0.0.1:\([0-9]*\)/pglite"$|\1|p' Dioxus.toml | head -1)}"
+    [ -n "$SERVER_PORT" ] || {
+        red "Dioxus.toml has no [[web.proxy]] backend naming the server's /pglite port"
+        red "(expected form in $PWD: backend = \"http://127.0.0.1:PORT/pglite\")"
+        exit 1
+    }
+
     blue "building client (dx build)…"
     "$DX" build --platform web > "$LOG_DIR/build-client.log" 2>&1
 
@@ -135,14 +147,32 @@ prep_consumer() {
     cargo build -q --manifest-path server/Cargo.toml \
         2> "$LOG_DIR/build-server.log"
 
+    # The binary is the server package's own name — read, not assumed
+    # (the hello-world hardcode launched the WRONG server for a second
+    # consumer and then mistook the neighbor's running server for this
+    # one, courtesy of the shared default port). Its location follows
+    # the workspace shape: a member server builds into the ROOT target
+    # (the counter's one-workspace layout), a detached [workspace]
+    # server builds into server/target (hello-world's).
+    SERVER_BIN="$(sed -n 's/^name = "\(.*\)"$/\1/p' server/Cargo.toml | head -1)"
+    [ -n "$SERVER_BIN" ] || { red "no package name in server/Cargo.toml"; exit 1; }
+    SERVER_BIN_PATH="$PWD/server/target/debug/$SERVER_BIN"
+    [ -x "$SERVER_BIN_PATH" ] || SERVER_BIN_PATH="$PWD/target/debug/$SERVER_BIN"
+
     if is_running "$SERVER_PORT"; then
         green "server already running on :$SERVER_PORT (pid $(port_pid $SERVER_PORT))"
     else
         blue "starting server…"
         # PORT is passed explicitly: the script's own PORT is the DX
         # devserver port (8080) — leaking it here would bind the server
-        # on top of the devserver's port.
-        (setsid env PORT="$SERVER_PORT" "$PWD/server/target/debug/hello-world-server" \
+        # on top of the devserver's port. DATABASE_URL is UNSET
+        # explicitly (gap #44-1 workaround class): the env a BUILD needs
+        # for sqlx's checked macros (the demo's database) must not
+        # become the consumer server's RUNTIME database — an inherited
+        # DATABASE_URL pointed the counter's migrator at the demo's
+        # offline_notes and it panicked VersionMissing(8) — the demo's
+        # version, not in this app's list.
+        (setsid env -u DATABASE_URL PORT="$SERVER_PORT" "$SERVER_BIN_PATH" \
             > "$LOG_DIR/server.log" 2>&1 &)
         wait_for_url "http://127.0.0.1:$SERVER_PORT/health" 30 \
             || { red "server failed to start — see $LOG_DIR/server.log"; exit 1; }

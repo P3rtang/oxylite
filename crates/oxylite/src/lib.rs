@@ -47,7 +47,7 @@ pub mod server;
 #[cfg(feature = "axum")]
 pub mod ws;
 
-pub use contract::sync_row::SyncRow;
+pub use contract::sync_row::{SqlType, SyncRow};
 pub use contract::table::{SyncTable, SyncTableWire};
 pub use protocol::timestamp::{Timestamp, TimestampError};
 pub use protocol::{ClientMsg, Op, ServerMsg, TableData, Tombstone};

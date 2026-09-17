@@ -1,0 +1,16 @@
+[package]
+license = "Apache-2.0"
+name = "counter-server"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+counter-shared = { path = "../shared", features = ["server"] }
+# The PUBLISHED lib, not a path dep — the example consumes the release
+# exactly as app #2 would. The `axum` feature is the WS transport.
+oxylite = { version = "0.1.3", features = ["server", "axum"] }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }

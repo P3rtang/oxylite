@@ -22,6 +22,91 @@ use crate::protocol::timestamp::Timestamp;
 use serde::Serialize;
 use uuid::Uuid;
 
+/// The SQL type of a column, where the generated statement loses the
+/// target-column context and an explicit cast is the only way to keep
+/// text-bound params typing correctly (see [`SyncRow::TYPES`]). The
+/// JS-side sibling is `contract::from_row::Type` — that enum describes
+/// what a BRIDGE VALUE is (decode errors); this one describes what the
+/// DATABASE column is (generation-time casts). `Number` cannot be the
+/// same thing: JS numbers are f64, Postgres has int4/int8/float8, and
+/// the counter's `count INTEGER` was the first consumer to care.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlType {
+    Uuid,
+    Text,
+    Integer,
+    BigInt,
+    Real,
+    DoublePrecision,
+    Boolean,
+    Timestamptz,
+}
+
+impl SqlType {
+    /// The SQL type name as it appears in an explicit cast.
+    pub fn as_sql(self) -> &'static str {
+        match self {
+            SqlType::Uuid => "uuid",
+            SqlType::Text => "text",
+            SqlType::Integer => "integer",
+            SqlType::BigInt => "bigint",
+            SqlType::Real => "real",
+            SqlType::DoublePrecision => "double precision",
+            SqlType::Boolean => "boolean",
+            SqlType::Timestamptz => "timestamptz",
+        }
+    }
+}
+
+impl std::fmt::Display for SqlType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_sql())
+    }
+}
+
+// The conversions live behind `client` because their other side does:
+// `from_row::Type` (the bridge-value shapes) is decode machinery, so in
+// a server-only build there is no `Type` to convert to or from.
+#[cfg(feature = "client")]
+impl From<SqlType> for crate::contract::from_row::Type {
+    /// Storage → value shape: what a bridge value of this column looks
+    /// like. Total and honest — a uuid arrives as text, any Postgres
+    /// number arrives as a JS number, timestamptz arrives date-shaped.
+    fn from(t: SqlType) -> Self {
+        match t {
+            SqlType::Uuid => Self::Text,
+            SqlType::Text => Self::Text,
+            SqlType::Integer | SqlType::BigInt | SqlType::Real | SqlType::DoublePrecision => {
+                Self::Number
+            }
+            SqlType::Boolean => Self::Boolean,
+            SqlType::Timestamptz => Self::Date,
+        }
+    }
+}
+
+#[cfg(feature = "client")]
+impl From<crate::contract::from_row::Type> for SqlType {
+    /// Value shape → storage, BEST-EFFORT by construction: `Number`
+    /// carries no precision (f64 is what it is → DoublePrecision), the
+    /// date-ish family lands on the LWW axis's storage type, and the
+    /// non-storage shapes (Array/Object/Function — a synced row is
+    /// scalar) fall to Text. The `From` cannot fail, so it is
+    /// deliberately lossy: declare [`SyncRow::TYPES`] explicitly for a
+    /// real schema instead of deriving it from the decode type.
+    fn from(t: crate::contract::from_row::Type) -> Self {
+        match t {
+            crate::contract::from_row::Type::Text => Self::Text,
+            crate::contract::from_row::Type::Number => Self::DoublePrecision,
+            crate::contract::from_row::Type::Boolean => Self::Boolean,
+            crate::contract::from_row::Type::Date => Self::Timestamptz,
+            crate::contract::from_row::Type::Array
+            | crate::contract::from_row::Type::Object
+            | crate::contract::from_row::Type::Function => Self::Text,
+        }
+    }
+}
+
 /// The contract a synced row type fulfills. Reads are a separate
 /// contract (`FromRow`, client feature) — decoding is side-specific,
 /// while this trait is what both sides share. The table carries the
@@ -38,6 +123,18 @@ pub trait SyncRow: Sized {
 
     /// Column names in bind order — feeds every generated statement.
     const COLUMNS: &'static [&'static str];
+
+    /// Column → SQL type for the slots the generated SQL loses
+    /// target-column context on (the guarded upsert consumes its rows
+    /// through a `VALUES` alias, where an untyped param would default
+    /// to text — 42804 on the first non-text column that is not the LWW
+    /// axis; the counter's `count INTEGER` was the first to hit it).
+    /// The PK casts `::uuid` and the LWW column `::timestamptz`
+    /// automatically; everything UNDECLARED here binds `::text`, which
+    /// is the demo-era assumption and still right for a text-schema
+    /// table. Declared types ride the statement as explicit casts, so
+    /// one list serves both engines.
+    const TYPES: &'static [(&'static str, SqlType)] = &[];
 
     /// Column compared for last-write-wins (`EXCLUDED.c > t.c`); `None`
     /// means batch order decides. Deletion needs this axis too: the
@@ -237,7 +334,8 @@ pub trait SyncRow: Sized {
             // Consumed through the `r` alias (no target-column context to
             // pin types), so cast explicitly: pk is uuid, the LWW column
             // is timestamptz (its comparisons must type against the
-            // tombstone/LWW columns), everything else is text.
+            // tombstone/LWW columns), a declared TYPES entry casts to its
+            // SQL type, everything else is text.
             let slots: Vec<String> = (1..=n_cols)
                 .map(|c| {
                     let i = r * n_cols + c;
@@ -246,6 +344,10 @@ pub trait SyncRow: Sized {
                         format!("${i}::uuid")
                     } else if Some(col) == Self::LWW {
                         format!("${i}::timestamptz")
+                    } else if let Some((_, sql_type)) =
+                        Self::TYPES.iter().find(|(name, _)| col == *name)
+                    {
+                        format!("${i}::{sql_type}")
                     } else {
                         format!("${i}::text")
                     }

@@ -1,0 +1,29 @@
+[package]
+license = "Apache-2.0"
+name = "counter-shared"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+# Side seams, the demo's shared-crate shape: `client` turns on the
+# lib's wasm machinery (the JS-row decode) so Counter's FromRow impl
+# compiles; `server` pulls sqlx for Counter's sqlx::FromRow impl.
+client = ["oxylite/client"]
+server = ["dep:sqlx"]
+
+[dependencies]
+enum-iterator = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["serde", "v7", "js"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+# The PUBLISHED lib, not a path dep — the example consumes the release
+# exactly as app #2 would.
+oxylite = { version = "0.1.3", default-features = false }
+sqlx = { version = "0.8", optional = true, features = [
+    "runtime-tokio",
+    "postgres",
+    "chrono",
+    "uuid",
+] }

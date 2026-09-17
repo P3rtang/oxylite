@@ -1,0 +1,24 @@
+[package]
+name = "counter"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# One workspace, client-owned: this package is the wasm app AND the
+# workspace root — `shared` and `server` are members (the demo's
+# three-crate shape in miniature). Nested [workspace] roots do not
+# compose ("multiple workspace roots found").
+[workspace]
+members = ["shared", "server"]
+
+[dependencies]
+# 0.1.3: the migration standard, the typed boot reads, the engine's
+# write path (upsert/delete/now) and the reactive queries.
+oxylite = { version = "0.1.3", features = ["client"] }
+# The app's own data crate (row + table + migrations) — the demo's
+# shared/shape in miniature.
+counter-shared = { path = "shared", features = ["client"] }
+dioxus = { version = "0.7", features = ["web"] }
+console_error_panic_hook = "0.1"
+# UUIDv7 client-generated ids — the protocol's row-id convention.
+uuid = { version = "1", features = ["v7", "js"] }
