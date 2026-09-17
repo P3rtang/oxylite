@@ -8,7 +8,7 @@ edition = "2024"
 # `client` enables shared's client seam (sync's wasm machinery + Note's
 # JS-row decode) — explicit here, no feature-unification luck.
 shared = { path = "../shared", features = ["client"] }
-oxylite = { path = "../oxylite", features = ["client"] }
+oxylite = { path = "../oxylite", default-features = false, features = ["client"] }
 dioxus = { version = "0.7", features = ["web"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

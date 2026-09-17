@@ -14,6 +14,20 @@ keywords = ["offline-first", "sync", "postgres", "pglite", "wasm"]
 exclude = ["assets/pglite"]
 
 [features]
+# On by default and opt-out-able BECAUSE the default set is otherwise
+# empty: `default = ["ack-pull"]` + the consumer's plain
+# `default-features = false, features = ["client"]` turns exactly this
+# off. The legacy ack-triggered re-pull (#33): after each Ack the client
+# re-pulls the log — pre-2.2 that was the ONLY way to learn the backlog
+# a push had created (the client had a 150ms poll and no push). With the
+# NOTIFY-driven stream the server already delivers the same seqs in
+# 7–25ms, so each Ack-pull is a redundant delivery of the same seq
+# (double `received N events` + an empty follow-up per write, observed
+# in the counter's logs). Backends with the push driver (every
+# sync_router consumer) can disable it; a hand-rolled backend without a
+# stream driver relies on it and keeps the default.
+ack-pull = []
+default = ["ack-pull"]
 # The wasm client half: engine, PGlite bridge, reactive queries. Off in
 # host builds, so the server graph compiles zero browser machinery
 # (previously the wasm modules stub-compiled host-side).

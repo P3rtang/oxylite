@@ -229,6 +229,11 @@ impl<T: SyncTableWire> Engine<T> {
                     log("sync", &format!("ack retirement failed: {e}"));
                 }
                 // The server may hold events we haven't seen; pull again.
+                // The legacy re-pull is feature-gated (`ack-pull`, default
+                // ON): with the NOTIFY stream the pushed seqs already
+                // arrive via the driver, so an app can turn the duplicate
+                // delivery off. Without it, the Ack is retirement only.
+                #[cfg(feature = "ack-pull")]
                 self.send(&ClientMsg::Pull {
                     since: self.cursor.get(),
                 });
@@ -279,8 +284,17 @@ impl<T: SyncTableWire> Engine<T> {
                     self.set_last_error(e);
                     return;
                 }
+                // The cursor save is conditional: a duplicate delivery
+                // (at-least-once replay) carries a cursor the client has
+                // already passed — `set` stays unconditional (the
+                // pull-until-empty + ack decisions read it) but the meta
+                // UPSERT is skipped when nothing advanced (a 0-event
+                // drain used to rewrite PGlite meta for nothing).
+                let advanced = c > self.cursor.get();
                 self.cursor.set(c);
-                save_cursor(db, c).await;
+                if advanced {
+                    save_cursor(db, c).await;
+                }
                 // The batch is a window into the backlog: keep pulling
                 // until the server returns an empty one. (At-least-once;
                 // LWW makes replays idempotent.)
@@ -359,8 +373,13 @@ impl<T: SyncTableWire> Engine<T> {
                     self.close_socket();
                     return;
                 }
+                let advanced = seq > self.cursor.get();
                 self.cursor.set(seq);
-                save_cursor(db, seq).await;
+                // Same conditional-save rule as the Events arm: a stale
+                // or duplicate snapshot must not rewrite meta.
+                if advanced {
+                    save_cursor(db, seq).await;
+                }
                 self.bump(&touched);
                 // The snapshot may already be behind the live log head —
                 // pull the remainder right away (same re-pull as Ack).

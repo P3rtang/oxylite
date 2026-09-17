@@ -12,9 +12,19 @@ publish = false
 members = ["shared", "server"]
 
 [dependencies]
-# 0.1.3: the migration standard, the typed boot reads, the engine's
-# write path (upsert/delete/now) and the reactive queries.
-oxylite = { version = "0.1.3", features = ["client"] }
+# 0.1.4: the migration standard, the typed boot reads, the engine's
+# write path (upsert/delete/now), the reactive queries and the
+# SqlType-typed SyncRow::TYPES. `default-features = false` turns off
+# the `ack-pull` default feature (the flag rides 0.1.5; this req picks
+# it up on the next lockfile refresh): the ack-triggered re-pull sent
+# a Pull after every Ack — pre-2.2 the only way a client learned the
+# backlog its own push created, but with the NOTIFY stream the server
+# already pushes the same seqs (in ~10ms), so keeping it doubled every
+# write's delivery: two "received N events" drains + an empty
+# follow-up per bump. This example's server is sync_router (push
+# driver built in), so the flag-off engine is the right shape — and
+# the drain logs go quiet.
+oxylite = { version = "0.1.4", default-features = false, features = ["client"] }
 # The app's own data crate (row + table + migrations) — the demo's
 # shared/shape in miniature.
 counter-shared = { path = "shared", features = ["client"] }
