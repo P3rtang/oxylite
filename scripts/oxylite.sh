@@ -140,12 +140,47 @@ prep_consumer() {
         exit 1
     }
 
+    # The consumer's .env is the BUILD-time env source (the user's
+    # expectation, mechanized): the checked sqlx macros compile against
+    # a live DB and sqlx ≥0.7 no longer auto-loads .env — only a real
+    # exported var reaches the macro expansion (a .env placed anywhere —
+    # counter root, shared/, repo root — never gets read by the
+    # registry-built oxylite). Sourcing it here makes `watch` work with
+    # the var written once. The RUNTIME stays env -u: the server binary
+    # starts below without DATABASE_URL, so a .env full of build-time
+    # values cannot leak into it (the counter-server's own default URL
+    # is the runtime contract — the gap-#44-1 env-leak rule).
+    if [ -f .env ]; then
+        blue "loading .env (build-time env — the server itself runs without it)"
+        set -a; . ./.env; set +a
+    fi
+
+    # Build failures MUST surface: set -e eats a failed `cargo build -q
+    # 2> log` as a silent exit (a watch that died after "building
+    # server…" with the 14 DATABASE_URL macro errors sitting in
+    # .logs/build-server.log was the report). Both builds tail their
+    # log on failure, and the macro case gets the workaround hint —
+    # .sqlx shipped in the crate is the real fix (ledger gap #1).
     blue "building client (dx build)…"
-    "$DX" build --platform web > "$LOG_DIR/build-client.log" 2>&1
+    "$DX" build --platform web > "$LOG_DIR/build-client.log" 2>&1 || {
+        red "dx build failed — tail of $LOG_DIR/build-client.log:"
+        tail -n 20 "$LOG_DIR/build-client.log"
+        exit 1
+    }
 
     blue "building server…"
     cargo build -q --manifest-path server/Cargo.toml \
-        2> "$LOG_DIR/build-server.log"
+        2> "$LOG_DIR/build-server.log" || {
+        red "server build failed — tail of $LOG_DIR/build-server.log:"
+        tail -n 20 "$LOG_DIR/build-server.log"
+        if grep -q "DATABASE_URL" "$LOG_DIR/build-server.log"; then
+            red "hint: the lib's checked sqlx macros compile against a live DB —"
+            red "export DATABASE_URL=<a migrated database> (e.g. this app's own) and rerun."
+            red ".sqlx shipped inside the oxylite package is the durable fix"
+            red "(gap ledger #1); until it lands every consumer needs this env at build time."
+        fi
+        exit 1
+    }
 
     # The binary is the server package's own name — read, not assumed
     # (the hello-world hardcode launched the WRONG server for a second

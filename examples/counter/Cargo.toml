@@ -24,7 +24,7 @@ members = ["shared", "server"]
 # follow-up per bump. This example's server is sync_router (push
 # driver built in), so the flag-off engine is the right shape — and
 # the drain logs go quiet.
-oxylite = { version = "0.1.4", default-features = false, features = ["client"] }
+oxylite = { version = "0.1.5", default-features = false, features = ["client"] }
 # The app's own data crate (row + table + migrations) — the demo's
 # shared/shape in miniature.
 counter-shared = { path = "shared", features = ["client"] }

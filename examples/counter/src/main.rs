@@ -63,11 +63,13 @@ fn App() -> Element {
     let counters_state = result.read().clone();
     let counters = counters_state.clone().unwrap_or_default();
     let status = engine::STATUS.read().clone();
+
     let mut name_input = use_signal(String::new);
+
     // Write failures surface inline (the demo's notice overlay is
     // demo-owned glue — a gap noted for the template story).
     let error = use_signal(|| None::<String>);
-    let error_state = error.read().clone();
+
     // Per-row move-captures, prepared OUTSIDE the rsx: the closures own
     // their row clone (an rsx for-body is an expression scope — no
     // statements inside).
@@ -75,6 +77,7 @@ fn App() -> Element {
         .iter()
         .map(|c| (c.id, c.name.clone(), c.count, c.clone(), c.clone()))
         .collect();
+
     // The only long-lived task: the engine's connect loop.
     use_effect(move || {
         spawn(async move {
@@ -83,12 +86,15 @@ fn App() -> Element {
     });
 
     rsx! {
-        div { style: "max-width: 640px; margin: 2rem auto; font-family: system-ui, sans-serif",
+        div {
+            style: "max-width: 640px; margin: 2rem auto; font-family: system-ui, sans-serif",
             h1 { "Counters" }
-            p { style: "color:#666",
+            p {
+                style: "color:#666",
                 "{status} · local: PGlite (IndexedDB) · remote: Postgres via WS"
             }
-            div { style: "display:flex; gap:8px",
+            div {
+                style: "display:flex; gap:8px",
                 input {
                     style: "flex:1; padding:6px",
                     value: "{name_input}",
@@ -109,15 +115,17 @@ fn App() -> Element {
             if let Err(e) = &counters_state {
                 p { style: "color:#b00", "load failed: {e}" }
             }
-            if let Some(e) = &error_state {
+            if let Some(e) = &error() {
                 p { style: "color:#b00", "write failed: {e}" }
             }
             if counters.is_empty() && counters_state.is_ok() {
                 p { style: "color:#999; margin-top: 1rem", "no counters yet — add one" }
             }
-            ul { style: "margin-top: 1rem; line-height: 2.4",
+            ul {
+                style: "margin-top: 1rem; line-height: 2.4",
                 for (id, name, count, minus, plus) in rows {
-                    li { key: "{id}",
+                    li {
+                        key: "{id}",
                         strong { "{name}" }
                         span { style: "color:#666; margin: 0 12px", "{count}" }
                         button {

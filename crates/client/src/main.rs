@@ -32,8 +32,13 @@ fn App() -> Element {
     // notes table changes, locally or via server events. Errors surface
     // here instead of a silently empty list.
     let result = use_select_all::<Note>();
+    // Resource state: None = not loaded yet (pending first query),
+    // Some(Ok(rows)) = loaded, Some(Err) = the query failed.
     let notes_state = result.read().clone();
-    let notes = notes_state.clone().unwrap_or_default();
+    let notes = notes_state
+        .clone()
+        .map(|r| r.unwrap_or_default())
+        .unwrap_or_default();
     let status = engine::STATUS.read().clone();
     let mut title_input = use_signal(String::new);
 
@@ -82,7 +87,7 @@ fn App() -> Element {
                     "Add"
                 }
             }
-            if let Err(e) = &notes_state {
+            if let Some(Err(e)) = &notes_state {
                 p { style: "color:#b00", "load failed: {e}" }
             }
             ul { style: "margin-top: 1rem; line-height: 1.8",
