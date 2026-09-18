@@ -44,23 +44,21 @@ fn main() {
         })
         .collect();
 
-    // The convention IS the contract with the server's migrator and the
-    // client's apply-once tracker: `NNNN_name.sql`, zero-padded, so
-    // lexicographic order == applied order on BOTH sides, and the
-    // versions are globally unique against the lib's protocol migrations
-    // (enforced with a named panic at the lib's merge point —
-    // migration_list.rs). Five digits are rejected on purpose — they
-    // would sort before four ("10000" < "9999"), so the width is
-    // enforced.
+    // The convention IS the identity contract (#48): applied order =
+    // NUMERIC version order; the timestamps the CLI scaffolds own the
+    // app's ordering (its own clock), and the versions are GLOBAL
+    // across the lib's protocol migrations (a collision is a named
+    // panic at the lib's merge point — migration_list.rs).
     files.sort();
     for (stem, _) in &files {
         let digits = stem.chars().take_while(|c| c.is_ascii_digit()).count();
         let rest = &stem[digits..];
-        if digits != 4 || !rest.starts_with('_') || rest.len() < 2 {
+        if digits == 0 || !rest.starts_with('_') || rest.len() < 2 {
             panic!(
-                "migrations: {} does not follow the NNNN_name.sql convention \
-                 (four zero-padded digits + underscore) — sqlx::migrate! and the \
-                 client's apply-once tracker must agree on order and identity",
+                "migrations: {} does not follow the <version>_<name>.sql \
+                 convention (integer version + underscore + name) — \
+                 sqlx::migrate! and the client's apply-once tracker must \
+                 agree on order and identity",
                 stem
             );
         }

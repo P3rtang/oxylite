@@ -59,7 +59,7 @@ fn expand(input: TokenStream) -> Result<TokenStream, String> {
         )
     })?;
 
-    let mut files: Vec<(String, PathBuf)> = entries
+    let files: Vec<(String, PathBuf)> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
@@ -81,30 +81,44 @@ fn expand(input: TokenStream) -> Result<TokenStream, String> {
     // The convention IS the identity contract on both engines: NNNN_name,
     // zero-padded, lexicographic == applied order. Five digits are
     // rejected on purpose — they would sort before four ("10000" < "9999").
-    files.sort_by(|a, b| a.0.cmp(&b.0));
-    for (stem, _) in &files {
+    // #48: applied order is the NUMERIC version order (any i64 prefix —
+    // the CLI scaffolds timestamps, legacy NNNN accepted). The streams
+    // never interleave (the merge puts the lib FIRST, then this list in
+    // its own order), so width/padding is no longer an ordering
+    // contract — only the parsed version is (it keys both history
+    // tables).
+    let mut versions: Vec<(i64, String, PathBuf)> = Vec::with_capacity(files.len());
+    for (stem, path) in files {
         let digits = stem.chars().take_while(|c| c.is_ascii_digit()).count();
         let rest = &stem[digits..];
-        if digits != 4 || !rest.starts_with('_') || rest.len() < 2 {
+        if digits == 0 || !rest.starts_with('_') || rest.len() < 2 {
             return Err(format!(
-                "migrations!: {stem} does not follow the NNNN_name.sql convention \
-                 (four zero-padded digits + underscore) — sqlx::migrate! and the \
-                 client's apply-once tracker must agree on order and identity"
+                "migrations!: {stem} does not follow the <version>_<name>.sql \
+                 convention — an integer version prefix (four-digit legacy \
+                 NNNN or a CLI-stamped timestamp) + underscore + name"
             ));
         }
+        let version: i64 = stem[..digits].parse().map_err(|e| {
+            format!("migrations!: {stem}: version prefix does not parse as i64 ({e})")
+        })?;
+        versions.push((version, stem, path));
     }
-    for w in files.windows(2) {
+    versions.sort();
+    for w in versions.windows(2) {
         if w[0].0 == w[1].0 {
             return Err(format!(
-                "migrations!: duplicate version in {} — two files claim {}",
+                "migrations!: two files in {} claim version {} ({}, {}) — \
+                 versions are global across the lib's list and this one",
                 dir.display(),
-                w[0].0
+                w[0].0,
+                w[0].1,
+                w[1].1,
             ));
         }
     }
 
     let mut code = String::from("&[");
-    for (stem, path) in &files {
+    for (_, stem, path) in &versions {
         // include_str! with the ABSOLUTE path: the tokens compile in the
         // caller's crate, so relative resolution would start at the
         // caller's source file — unknowable from here (the demo's

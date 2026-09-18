@@ -1,0 +1,20 @@
+# provisioned by oxylite.sh init — the consumer's own development
+# database (host port 5433: the repo/ladder stacks keep 5432).
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sync
+      POSTGRES_PASSWORD: sync
+      POSTGRES_DB: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sync"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+volumes:
+  pgdata:

@@ -2,7 +2,17 @@
 ## Oxylite CLI
 ##
 ## usage:
+## usage:
 ##   oxylite.sh init [version]     vendor the PGlite bundle → ./assets/pglite
+##                                 AND provision the dev environment:
+##                                 compose.yaml + .env + postgres up, then
+##                                 apply the MIGRATIONS (the CLI is the
+##                                 owner — the lib's list from the published
+##                                 crate's registry copy + the app's
+##                                 migrations/ dir, one NNNN stream; every
+##                                 applied row is seeded into _sqlx_migrations
+##                                 so sqlx's boot migrator uses the CLI's
+##                                 history, checksum-verified)
 ##   oxylite.sh migrate up <name>  scaffold the next NNNN_name.sql in the
 ##                                 app's migrations dir (up only — `add`,
 ##                                 i.e. up + down pairs, is future work)
@@ -60,6 +70,174 @@ DX="${DX:-$HOME/.cargo/bin/dx}"
 VERSION="${PGLITE_VERSION:-0.5.8}"
 DEST="${PGLITE_DEST:-assets/pglite}"
 PORT="${PORT:-8080}"
+
+# ---- #47: the CLI owns the environment and the migrations ----
+# The consumer environment defaults: container port 5433 (the repo's own
+# dev stack keeps 5432; nothing collides), engine via COMPOSE exactly
+# like the repo's scripts (podman locally, docker where containerized).
+# DB name derives from the project dir (override: OX_DB_NAME).
+COMPOSE_ENGINE="${COMPOSE:-podman compose}"
+OX_DB_PORT_INIT="${OX_DB_PORT:-5433}"
+
+# Locate the PUBLISHED crate's migrations dir: the registry copy is the
+# single source for the lib half — the CLI never ships or caches lib SQL
+# itself (the version comes from the consumer's own Cargo.toml req).
+lib_migrations_dir() {
+    local ver dir
+    ver="$(sed -n 's/^oxylite = { version = "\([0-9.]*\)".*/\1/p' Cargo.toml | head -1)"
+    [ -n "$ver" ] || ver="$(sed -n 's/^oxylite = "\([0-9.]*\)"$/\1/p' Cargo.toml | head -1)"
+    [ -n "$ver" ] || { echo ""; return 0; } # oxylite not a dep yet — provision still proceeds
+    local dir
+    dir="$(ls -d "$HOME"/.cargo/registry/src/index.crates.io-*/oxylite-"$ver" 2>/dev/null | head -1)"
+    [ -n "$dir" ] || { red "oxylite $ver pinned but not in the registry cache — run any cargo build once, then rerun init"; exit 1; }
+    printf '%s/migrations' "$dir"
+}
+
+
+# Apply the merged migration stream: the APP's migrations/ dir AND the
+# lib's registry copy, one NNNN-sorted pass — the same merge rule as
+# migration_list::migrations_merged (a collision between the two
+# namespaces fails HERE, not at boot — the init-version of the #40
+# guard). Every applied migration is seeded into _sqlx_migrations with
+# the checksum sqlx's own migrator computes (SHA-384 of the file,
+# sqlx-core 0.8 Migration::new): boot then verifies and skips the
+# CLI-owned history instead of colliding with existing tables.
+# TARGET: the APP's database (the DATABASE_URL .env names), NOT the
+# postgres bootstrap db — the history must live where the server's
+# migrator looks at boot.
+apply_migrations() {
+    local app_dir="${OXYLITE_MIGRATIONS_DIR:-migrations}" lib_dir
+    local app_db="${OX_DB_NAME:-${DATABASE_URL##*/}}"
+    if [ -z "$app_db" ]; then
+        red "no target database — set DATABASE_URL in .env (init provisions it)"
+        exit 1
+    fi
+    # The history table only exists once a MIGRATOR has run — the CLI is
+    # frequently here before any server boot, so create it exactly as
+    # sqlx-postgres does (migrate.rs's ensure_migrations_table).
+    $COMPOSE_ENGINE exec -T postgres psql -U sync -d "$app_db" -q \
+        -v ON_ERROR_STOP=1 -c "CREATE TABLE IF NOT EXISTS _sqlx_migrations (
+            version BIGINT PRIMARY KEY,
+            description TEXT NOT NULL,
+            installed_on TIMESTAMPTZ NOT NULL DEFAULT now(),
+            success BOOLEAN NOT NULL,
+            checksum BYTEA NOT NULL,
+            execution_time BIGINT NOT NULL
+        )" || { red "could not ensure _sqlx_migrations"; exit 1; }
+    [ -d "$app_dir" ] || { blue "no migrations/ dir yet — the CLI applied none"; return 0; }
+    lib_dir="$(lib_migrations_dir 2>/dev/null)" || exit 1
+    [ -n "$lib_dir" ] || { blue "oxylite is not a dependency yet — the lib's migrations ride the next init/migrate apply"; return 0; }
+
+    # The #48 merge rule, CLI twin: LIB FIRST (its own numeric-version
+    # order), THEN the app's stream (its own order — timestamps from
+    # `migrate up`, legacy NNNN accepted). The streams never interleave:
+    # a consumer's file name carries no constraint against the lib's.
+    # The numeric version remains GLOBAL (the history table's PK) — a
+    # collision panics here, both files named, instead of crashing the
+    # sqlx boot midway.
+    local name f ver prevver=0 prevname=""
+    # Numeric global sort across BOTH streams: the lib's integers
+    # (0001…) sort before any consumer timestamp (≥1.7e13) by eleven
+    # orders of magnitude — so lexicographic-numeric on the union IS
+    # the lib-first-then-app rule, without special-casing.
+    for name in $( (ls "$lib_dir"/*.sql 2>/dev/null; ls "$app_dir"/*.sql 2>/dev/null) \
+                   | sed 's|^.*/||' | LC_ALL=C sort -t_ -k1,1n -u ); do
+        case "$name" in
+            [0-9]*_*.sql) ;;
+            *) red "migration $name has no <version>_<name> prefix — skip (the macro rejects it too)"; continue ;;
+        esac
+        stem="${name%%_*}"
+        ver=$((10#$stem))
+        if [ "$ver" -eq "$prevver" ] 2>/dev/null; then
+            red "migration version collision: $prevname and $name both claim $ver — rename one"
+            exit 1
+        fi
+        prevver=$ver; prevname=$name
+        f="$lib_dir/$name"; [ -f "$f" ] || f="$app_dir/$name"
+        desc="${name#*_}"; desc="${desc%.sql}"
+        if $COMPOSE_ENGINE exec -T postgres psql -U sync -d "$app_db" -tAc \
+            "SELECT 1 FROM _sqlx_migrations WHERE version = $ver" 2>/dev/null | grep -q 1; then
+            blue "already applied: $name"
+            continue
+        fi
+        sha="$(shasum -a 384 "$f" | cut -d' ' -f1)"
+        # Host paths are meaningless to in-container psql — stdin pipes
+        # the file. Apply + seed are ONE transaction: a migration whose
+        # history row failed leaves NO half-recorded state behind.
+        { cat "$f"; printf '\nINSERT INTO _sqlx_migrations (version, description, installed_on, success, checksum, execution_time) VALUES (%s, %s, now(), true, decode(%s, %s), 0);\n' \
+            "$ver" "$(printf "'%s'" "$desc")" "$(printf "'%s'" "$sha")" "'hex'"; } \
+            | $COMPOSE_ENGINE exec -T postgres psql -U sync -d "$app_db" -1 -q \
+                -v ON_ERROR_STOP=1 || { red "migration $name failed — nothing half-recorded"; exit 1; }
+        green "applied: $name"
+    done
+}
+
+# Provision the environment of a consuming project: its own compose
+# stack (fresh port, own DB) + .env visible to the macro-checked builds
+# (the #45 loader reads it), database created. The degradation path
+# respects what exists: an .env without a compose.yaml = the consumer
+# has their own database (external infra) — nothing scaffolded, and
+# the environment step only sources .env; a compose.yaml without .env
+# = scaffolded-before-.env (impossible from here, but honest guards).
+provision() {
+    if [ -f .env ] && [ -f compose.yaml ]; then
+        blue "provision: .env + compose.yaml already exist — using them as-is"
+        set -a; . ./.env; set +a
+        return 0
+    fi
+    if [ -f .env ]; then
+        blue "provision: .env exists (your database, external infra OK) — no compose scaffold"
+        set -a; . ./.env; set +a
+        return 0
+    fi
+    local db="${OX_DB_NAME:-$(basename "$PWD" | tr -c 'a-zA-Z0-9_' '_' | sed 's/_*$//')}"
+    if [ -f compose.yaml ]; then
+        blue "provision: compose.yaml exists; scaffolding .env against its container"
+    else
+        cat > compose.yaml <<EOF
+# provisioned by oxylite.sh init — the consumer's own development
+# database (host port ${OX_DB_PORT_INIT}: the repo/ladder stacks keep 5432).
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sync
+      POSTGRES_PASSWORD: sync
+      POSTGRES_DB: postgres
+    ports:
+      - "${OX_DB_PORT_INIT}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sync"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+volumes:
+  pgdata:
+EOF
+        green "wrote compose.yaml (postgres, host port ${OX_DB_PORT_INIT})"
+    fi
+    printf 'OX_DB_PORT=%s\nOX_DB_NAME=%s\nDATABASE_URL=postgres://sync:sync@localhost:%s/%s\n' \
+        "$OX_DB_PORT_INIT" "$db" "$OX_DB_PORT_INIT" "$db" > .env
+    green "wrote .env: DATABASE_URL → postgres://sync:sync@localhost:${OX_DB_PORT_INIT}/$db"
+    set -a; . ./.env; set +a
+    blue "bringing the stack up (${COMPOSE_ENGINE})…"
+    $COMPOSE_ENGINE up -d
+    local tries=0
+    until $COMPOSE_ENGINE exec -T postgres pg_isready -U sync -q; do
+        tries=$((tries + 1)); [ $tries -gt 30 ] && { red "postgres never became ready"; exit 1; }
+        sleep 1
+    done
+    if ! $COMPOSE_ENGINE exec -T postgres psql -U sync -d postgres -tAc \
+        "SELECT 1 FROM pg_database WHERE datname = '$db'" | grep -q 1; then
+        $COMPOSE_ENGINE exec -T postgres psql -U sync -d postgres -c \
+            "CREATE DATABASE \"$db\""
+    fi
+    green "database ready: $db"
+}
+
+
 SERVER_PORT="${SERVER_PORT:-}" # derived from Dioxus.toml per consumer
 
 # Logs live in the CONSUMING project (the repo's .logs convention moved
@@ -146,13 +324,20 @@ prep_consumer() {
     # exported var reaches the macro expansion (a .env placed anywhere —
     # counter root, shared/, repo root — never gets read by the
     # registry-built oxylite). Sourcing it here makes `watch` work with
-    # the var written once. The RUNTIME stays env -u: the server binary
-    # starts below without DATABASE_URL, so a .env full of build-time
-    # values cannot leak into it (the counter-server's own default URL
-    # is the runtime contract — the gap-#44-1 env-leak rule).
+    # the var written once.
+    # Runtime rule (#47 amendment): the .env is now the CONSUMER'S OWN
+    # declared database (init provisions it), so a .env DATABASE_URL is
+    # the server's runtime URL too. What still may NOT leak is a
+    # borrowed shell env (the gap-#44-1 rule) — hence: .env present →
+    # start with its value; no .env → env -u keeps the protect.
     if [ -f .env ]; then
-        blue "loading .env (build-time env — the server itself runs without it)"
+        blue "loading .env (the consumer's own database — build AND runtime)"
         set -a; . ./.env; set +a
+    fi
+    if [ -n "${DATABASE_URL:-}" ]; then
+        RUNTIME_DB=pass-through
+    else
+        RUNTIME_DB=stripped
     fi
 
     # Build failures MUST surface: set -e eats a failed `cargo build -q
@@ -174,10 +359,9 @@ prep_consumer() {
         red "server build failed — tail of $LOG_DIR/build-server.log:"
         tail -n 20 "$LOG_DIR/build-server.log"
         if grep -q "DATABASE_URL" "$LOG_DIR/build-server.log"; then
-            red "hint: the lib's checked sqlx macros compile against a live DB —"
-            red "export DATABASE_URL=<a migrated database> (e.g. this app's own) and rerun."
-            red ".sqlx shipped inside the oxylite package is the durable fix"
-            red "(gap ledger #1); until it lands every consumer needs this env at build time."
+            red "hint: the checked sqlx macros compile against a live migrated DB."
+            red "run 'oxylite.sh init' first — it provisions the consumer stack"
+            red "(compose + .env + database) and applies the migrations, then rerun."
         fi
         exit 1
     }
@@ -200,15 +384,18 @@ prep_consumer() {
         blue "starting server…"
         # PORT is passed explicitly: the script's own PORT is the DX
         # devserver port (8080) — leaking it here would bind the server
-        # on top of the devserver's port. DATABASE_URL is UNSET
-        # explicitly (gap #44-1 workaround class): the env a BUILD needs
-        # for sqlx's checked macros (the demo's database) must not
-        # become the consumer server's RUNTIME database — an inherited
-        # DATABASE_URL pointed the counter's migrator at the demo's
-        # offline_notes and it panicked VersionMissing(8) — the demo's
-        # version, not in this app's list.
-        (setsid env -u DATABASE_URL PORT="$SERVER_PORT" "$SERVER_BIN_PATH" \
-            > "$LOG_DIR/server.log" 2>&1 &)
+        # on top of the devserver's port. The DATABASE_URL rule:
+        # consumer-owned .env → pass-through; borrowed shell env (no
+        # .env) → stripped (gap #44-1: a build-time borrowed URL must
+        # not run the consumer's migrator against a foreign database —
+        # VersionMissing panic, the counter's old nose-dive).
+        if [ "$RUNTIME_DB" = pass-through ]; then
+            (setsid env PORT="$SERVER_PORT" "$SERVER_BIN_PATH" \
+                > "$LOG_DIR/server.log" 2>&1 &)
+        else
+            (setsid env -u DATABASE_URL PORT="$SERVER_PORT" "$SERVER_BIN_PATH" \
+                > "$LOG_DIR/server.log" 2>&1 &)
+        fi
         wait_for_url "http://127.0.0.1:$SERVER_PORT/health" 30 \
             || { red "server failed to start — see $LOG_DIR/server.log"; exit 1; }
     fi
@@ -217,60 +404,47 @@ prep_consumer() {
 }
 
 # Scaffold the next up migration in the consumer's migrations dir — the
-# standard's day-one motion: `oxylite.sh migrate up <name>` computes the
-# next free NNNN, validates the stem against the macro's rule (so a bad
-# name fails here, not at compile), and writes the file. UP ONLY by
-# ruling: `add` (an up + down pair) is reserved for the future
-# omnidirectional story, so the verb stays honest about what it creates.
+# standard's day-one motion: `oxylite.sh migrate up <name>` writes a
+# TIMESTAMP-stamped file (the #48 scheme: consumers own their clock —
+# seconds since epoch-style YYYYMMDDHHMMSS; bumped forward one second
+# while the exact stamp is taken, so two scaffolds in a burst stay
+# ordered), validates the name against the macro's rule (a bad name
+# fails here, not at compile). UP ONLY by ruling: `add` (an up + down
+# pair) is reserved for the future omnidirectional story, so the verb
+# stays honest about what it creates.
 migrate_up() { # name...
     local dir="${OXYLITE_MIGRATIONS_DIR:-migrations}"
     [ $# -ge 1 ] || { red "usage: oxylite.sh migrate up <name-of-migration>"; exit 1; }
 
     # Normalize: lowercase, whitespace runs → single underscore (the
-    # demo's house style: 0001_notes, 0008_notes_timestamptz). Hyphens
-    # stay legal — the macro only cares about the NNNN_ prefix.
+    # demo's house style). Hyphens stay legal — the macro only cares
+    # about the numerically-versioned prefix.
     local name
     name="$(echo "$*" | tr '[:upper:]' '[:lower:]' | tr -s ' _' '_' | sed 's/^_*//; s/_*$//')"
     [ -n "$name" ] || { red "empty migration name"; exit 1; }
 
     mkdir -p "$dir"
-    # Next free NNNN: max stem version + 1 (down files share their up's
-    # number — they cannot skew the max). Five digits are REJECTED by
-    # the macro on purpose ("10000" sorts before "9999"), so hitting
-    # 10000 is a hard stop, not a wrap.
-    local next=1 f stem
-    for f in "$dir"/*.sql; do
-        [ -e "$f" ] || continue
-        stem="${f##*/}"; stem="${stem%%_*}"
-        [[ "$stem" =~ ^[0-9]{4}$ ]] || continue
-        [ $((10#$stem)) -ge "$next" ] && next=$((10#$stem + 1))
+    # Next version: the WALL CLOCK, bumped one second while taken — the
+    # consumer's clock owns their project's order (the lib's stream
+    # stays integers; the two never interleave, so no range guard is
+    # needed — the #48 ruling that dissolved gap #2).
+    local next f stem
+    next="$(date +%Y%m%d%H%M%S)"
+    f="$dir/${next}_${name}.sql"
+    while [ -e "$f" ]; do
+        next=$((next + 1))
+        f="$dir/${next}_${name}.sql"
     done
-    [ "$next" -le 9999 ] || {
-        red "migrations dir exhausted — next number would be $next and the convention caps at 9999"
-        exit 1
-    }
 
-    local file fname stem rest
-    file="$(printf '%s/%04d_%s.sql' "$dir" "$next" "$name")"
-    fname="${file##*/}"
-    stem="${fname%%_*}"
-    rest="${fname#*_}"
-
-    # Same check the macro compiles with — validate here so the error
-    # carries the file's intent, not a compile error's location.
-    if [ ${#stem} -ne 4 ] || [ -z "$rest" ]; then
-        red "normalized name does not satisfy NNNN_name: $file"
-        exit 1
-    fi
-
-    [ -e "$file" ] && { red "already exists: $file"; exit 1; }
-    cat > "$file" <<EOF
--- ${name} — up migration (applied once, lexicographic order == applied
--- order on both engines). Postgres + PGlite compatible SQL; the down
--- half is future work (the omnidirectional \`add\`).
+    [ -e "$f" ] && { red "already exists: $f"; exit 1; }
+    cat > "$f" <<EOF
+-- ${name} — up migration (applied once, lib stream first then this
+-- stream by version order, per the merge rule). Postgres + PGlite
+-- compatible SQL; the down half is future work (the omnidirectional
+-- \`add\`).
 EOF
 
-    green "created $file"
+    green "created $f"
     blue "write the SQL; the next build embeds it (a one-line build.rs with"
     blue 'cargo:rerun-if-changed=migrations keeps new files picked up)'
 }
@@ -283,8 +457,12 @@ cmd="${1:-}"
 case "$cmd" in
     init)
         # Explicit init: always re-vendors (the re-run is the point —
-        # bump the version arg to upgrade the bundle).
+        # bump the version arg to upgrade the bundle), then provisions
+        # the environment and applies the migrations (the CLI is the
+        # migration owner — #47: idempotent; second runs seed nothing).
         vendor "$DEST" "${1:-$VERSION}"
+        provision
+        apply_migrations
         ;;
     migrate)
         # One verb today (`up`); the namespace is reserved — down/status

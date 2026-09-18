@@ -1,37 +1,38 @@
 //! The migration standard's merge contract (host tests — the merge is
-//! pure): lib protocol migrations + the app's list ride as ONE list,
-//! lexicographic order == applied order, and a version collision is a
-//! named panic. The client's `Pglite::init` and the server's
-//! `server::migrator` both funnel through `migrations_merged` — pinning
-//! it here pins both engines' applied shape.
+//! pure), as the #48 ruling has it: the LIB's stream runs first (its
+//! own numeric-version order), then every consumer migration in their
+//! order — whatever theaNAMES say — and a numeric version collision
+//! (within either stream or across them) is a named panic. The client's
+//! `Pglite::init` and the server's `server::migrator` both funnel
+//! through `migrations_merged` — pinning it here pins both engines'
+//! applied shape.
 
 use oxylite::migrations_merged;
 
-// The app's list as the macro would embed it: the app's own tables only,
-// NNNN-ordered.
+// The app's list as the macro would embed it — CLI-stamped timestamps
+// (the consumer owns their clock; the lib's integers live eleven
+// orders of magnitude below, the gap the merge rule leans on).
 const APP: &[(&str, &str)] = &[
-    ("0001_app_notes", "create table app_notes ();"),
-    ("0008_app_extra", "create table app_extra ();"),
-    ("0012_app_last", "create table app_last ();"),
+    ("20260919100005_app_notes", "create table app_notes ();"),
+    ("20260919101015_app_extra", "create table app_extra ();"),
+    ("20260919102045_app_last", "create table app_last ();"),
 ];
 
 #[test]
-fn merged_is_the_global_lexicographic_union() {
+fn lib_first_then_the_app_stream_in_their_own_order() {
     let merged = migrations_merged(APP);
     let names: Vec<&str> = merged.iter().map(|(n, _)| *n).collect();
 
-    // The app's entries interleave with the lib's by version, not by
-    // origin — the demo's layout (0001 app, 0002-0011 lib, 0008 app)
-    // is exactly this shape.
-    assert_eq!(names.first(), Some(&"0001_app_notes"));
-    assert!(names.contains(&"0002_sync_log"));
-    assert!(names.contains(&"0011_sync_log_notify"));
-    assert!(names.contains(&"0008_app_extra"));
-    assert_eq!(names.last(), Some(&"0012_app_last"));
-
-    let mut sorted = names.clone();
-    sorted.sort();
-    assert_eq!(names, sorted, "merged must already be applied-ordered");
+    // The lib's block is the HEAD, in its own version order; the app's
+    // stamps follow, never interleaved (a 14-digit stamp cannot equal a
+    // four-digit lib version — the streams' clocks do not cross-compare).
+    assert_eq!(names.first(), Some(&"0001_sync_log"));
+    assert!(names.contains(&"0009_sync_log_notify"));
+    assert_eq!(
+        *names.get(oxylite::MIGRATIONS.len()).unwrap(),
+        "20260919100005_app_notes"
+    );
+    assert_eq!(names.last(), Some(&"20260919102045_app_last"));
 }
 
 #[test]
@@ -51,16 +52,28 @@ fn merged_len_is_lib_plus_app() {
 fn empty_app_list_is_the_lib_only() {
     let merged = migrations_merged(&[]);
     assert_eq!(merged.len(), oxylite::MIGRATIONS.len());
-    assert_eq!(merged[0].0, "0002_sync_log");
+    assert_eq!(merged[0].0, "0001_sync_log");
 }
 
 #[test]
 #[should_panic(expected = "version collision")]
 fn a_version_collision_panics_with_both_sides_named() {
-    // The app picked a number the lib already owns — the exact mistake
-    // the demo's build.rs used to catch at compile time when the union
-    // was scanned in one place; the merge point is the one place both
-    // lists meet, so it is the one place this can be named.
-    let colliding: &[(&str, &str)] = &[("0002_sync_log", "create table sneak ();")];
+    // The app file claimed a version the lib already owns — the legacy
+    // NNNN hole: hand-named files colliding with the re-indexed lib are
+    // caught at the merge point (compile or boot), both files named,
+    // instead of a mid-boot PK violation.
+    let colliding: &[(&str, &str)] = &[("0002_sneak", "create table sneak ();")];
     let _ = migrations_merged(colliding);
+}
+
+#[test]
+#[should_panic(expected = "version collision")]
+fn a_dup_inside_the_app_stream_panics_too() {
+    // The rule is one numeric version space: the app repeating its own
+    // version is the same programming error as reusing a lib's.
+    let duped: &[(&str, &str)] = &[
+        ("20260919100005_one", "create table one ();"),
+        ("20260919100005_two", "create table two ();"),
+    ];
+    let _ = migrations_merged(duped);
 }

@@ -36,21 +36,22 @@ fn main() {
         })
         .collect();
 
-    // The convention IS the contract with `sqlx::migrate!` (same
-    // directory, `server::migrate`) and with the app's merged client
-    // list: `NNNN_name.sql`, zero-padded, so lexicographic order ==
-    // applied order on BOTH sides, and the numbers stay globally unique
-    // against the app's own migrations. Five digits are rejected on
-    // purpose — they would sort before four ("10000" < "9999").
+    // The convention IS the identity contract (#48 applied order =
+    // NUMERIC version order; the merge emits the lib's list FIRST, then
+    // the app's — the streams never interleave, so width is not an
+    // ordering contract). The lib's own files stay four-digit integers
+    // (readable, stable, gap-isolated from consumer timestamps), but
+    // the rule itself is the shared parser shape.
     files.sort();
     for (stem, _) in &files {
         let digits = stem.chars().take_while(|c| c.is_ascii_digit()).count();
         let rest = &stem[digits..];
-        if digits != 4 || !rest.starts_with('_') || rest.len() < 2 {
+        if digits == 0 || !rest.starts_with('_') || rest.len() < 2 {
             panic!(
-                "migrations: {} does not follow the NNNN_name.sql convention \
-                 (four zero-padded digits + underscore) — sqlx::migrate! and the \
-                 client's apply-once tracker must agree on order and identity",
+                "migrations: {} does not follow the <version>_<name>.sql \
+                 convention (integer version + underscore + name) — \
+                 sqlx::migrate! and the client's apply-once tracker must \
+                 agree on order and identity",
                 stem
             );
         }

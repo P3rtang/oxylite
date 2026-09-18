@@ -11,11 +11,14 @@ use enum_iterator::Sequence;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// The app's own migrations, embedded by the standard's macro (the
-/// dir lives HERE so the server's migrator and the client's boot read
-/// one list). The lib's protocol migrations merge in at the boot/
-/// migrator entry points — the consumer never names them.
-pub static APP_MIGRATIONS: &[(&str, &str)] = oxylite::migrations!("migrations");
+/// The app's own migrations, embedded by the standard's macro — the
+/// dir lives at the PROJECT ROOT (defaults: the CLI's provision/apply
+/// looks there first), the macro call resolves it relative to THIS
+/// crate's manifest (`../`). Self-hosted in the shared crate so
+/// client and server compile-side share the one source; the lib's
+/// protocol migrations merge in at the boot/migrator entry points —
+/// the consumer never names them.
+pub static APP_MIGRATIONS: &[(&str, &str)] = oxylite::migrations!("../migrations");
 
 /// The app's SCHEMA version: the crate version itself (one source of
 /// truth, demo-ruled). Bump discipline: MAJOR = breaking shipped

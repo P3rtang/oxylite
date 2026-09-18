@@ -45,9 +45,16 @@ pub fn migrator(app: &[(&'static str, &'static str)]) -> sqlx::migrate::Migrator
     let migrations = crate::migrations_merged(app)
         .into_iter()
         .map(|(name, sql)| {
-            let version: i64 = name[..4]
+            // The version is the name's FULL digit run (the macro
+            // validates the shape at compile time, so the parse
+            // cannot fail). A fixed four-digit slice would read the
+            // timestamps' first four characters — every consumer
+            // migration collapsing to version 2026 (the PK
+            // collision the fresh rebuild caught).
+            let digits = name.chars().take_while(|c| c.is_ascii_digit()).count();
+            let version: i64 = name[..digits]
                 .parse()
-                .expect("NNNN version stem — migrations! validates the shape");
+                .expect("numeric version stem — migrations! validates the shape");
             sqlx::migrate::Migration::new(
                 version,
                 name.into(),
