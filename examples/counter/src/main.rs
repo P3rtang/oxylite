@@ -60,8 +60,13 @@ fn App() -> Element {
     // counters table changes, locally or via server events — the
     // hand-rolled load/refresh of the previous rung is gone.
     let result = use_select_all::<Counter>();
+    // Resource state: None = not loaded yet (pending first query),
+    // Some(Ok(rows)) = loaded, Some(Err) = the query failed.
     let counters_state = result.read().clone();
-    let counters = counters_state.clone().unwrap_or_default();
+    let counters = counters_state
+        .clone()
+        .map(|r| r.unwrap_or_default())
+        .unwrap_or_default();
     let status = engine::STATUS.read().clone();
 
     let mut name_input = use_signal(String::new);
@@ -112,13 +117,16 @@ fn App() -> Element {
                     "Add"
                 }
             }
-            if let Err(e) = &counters_state {
+            if let Some(Err(e)) = &counters_state {
                 p { style: "color:#b00", "load failed: {e}" }
             }
             if let Some(e) = &error() {
                 p { style: "color:#b00", "write failed: {e}" }
             }
-            if counters.is_empty() && counters_state.is_ok() {
+            if counters_state.is_none() {
+                p { style: "color:#999; margin-top: 1rem", "loading…" }
+            }
+            if counters.is_empty() && counters_state.is_some() {
                 p { style: "color:#999; margin-top: 1rem", "no counters yet — add one" }
             }
             ul {
